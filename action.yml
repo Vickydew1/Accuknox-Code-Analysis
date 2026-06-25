@@ -1,0 +1,483 @@
+name: "AccuKnox ASPM Scan"
+description: "Unified AccuKnox ASPM scanner. Run any combination via scan_type: sast, sca, secret, iac, ml, api-discovery, sbom."
+
+branding:
+  icon: "shield"
+  color: "purple"
+
+inputs:
+  # ------------------------------------------------------------------
+  # Which scans to run
+  # ------------------------------------------------------------------
+  scan_type:
+    description: "Comma/space separated list of scans to run: sast, sca, secret, iac, ml, api-discovery, sbom"
+    required: true
+
+  # ------------------------------------------------------------------
+  # Common AccuKnox configuration
+  # ------------------------------------------------------------------
+  accuknox_endpoint:
+    description: "AccuKnox CSPM panel endpoint URL"
+    required: true
+  accuknox_token:
+    description: "Token for authenticating with the AccuKnox CSPM panel"
+    required: true
+  accuknox_label:
+    description: "Label in AccuKnox SaaS for associating scan results"
+    required: true
+  scanner_version:
+    description: "Version (git tag) of the accuknox-aspm-scanner binary to download (must include the sca, ml, and api-discovery scanners)"
+    required: false
+    default: "v0.14.7-rc.1"
+  soft_fail:
+    description: "Do not return a non-zero exit code if a scan finds issues (applies to all scans)"
+    required: false
+    default: "true"
+  upload_artifact:
+    description: "Upload kept scan result files as a GitHub artifact"
+    required: false
+    default: "false"
+
+  # ------------------------------------------------------------------
+  # SAST (OpenGrep)
+  # ------------------------------------------------------------------
+  sast_command:
+    description: "sast: command text passed to --command (the directory/target to scan)"
+    required: false
+    default: "."
+  sast_severity:
+    description: "sast: comma-separated severities (LOW, MEDIUM, HIGH, CRITICAL)"
+    required: false
+    default: "HIGH"
+
+  # ------------------------------------------------------------------
+  # SCA (Trivy filesystem)
+  # ------------------------------------------------------------------
+  sca_command:
+    description: "sca: command text passed to --command (e.g. 'fs .')"
+    required: false
+    default: "fs ."
+  sca_severity:
+    description: "sca: comma-separated severities to fail on (UNKNOWN, LOW, MEDIUM, HIGH, CRITICAL)"
+    required: false
+    default: ""
+
+  # ------------------------------------------------------------------
+  # Secret (TruffleHog)
+  # ------------------------------------------------------------------
+  secret_command:
+    description: "secret: command text passed to --command (e.g. 'git file://.' or 'filesystem .')"
+    required: false
+    default: "git file://."
+  secret_additional_arguments:
+    description: "secret: extra arguments appended to the secret command (e.g. --results verified --branch main)"
+    required: false
+    default: ""
+
+  # ------------------------------------------------------------------
+  # IaC (Checkov) - with framework support
+  # ------------------------------------------------------------------
+  iac_command:
+    description: "iac: raw command text passed to --command. When set, overrides iac_directory/iac_file/iac_framework/iac_compact/iac_quiet."
+    required: false
+    default: ""
+  iac_directory:
+    description: "iac: directory with infrastructure code to scan"
+    required: false
+    default: "."
+  iac_file:
+    description: "iac: specific file to scan; cannot be used with iac_directory"
+    required: false
+    default: ""
+  iac_framework:
+    description: "iac: restrict scan to specific framework(s), e.g. Kubernetes, Terraform, terraform_plan (comma-separated for multiple)"
+    required: false
+    default: ""
+  iac_compact:
+    description: "iac: do not display code blocks in output"
+    required: false
+    default: "true"
+  iac_quiet:
+    description: "iac: display only failed checks"
+    required: false
+    default: "true"
+
+  # ------------------------------------------------------------------
+  # ML Static Scan (ModelScan)
+  # ------------------------------------------------------------------
+  ml_command:
+    description: "ml: command text passed to --command (e.g. 'scan -p . -r json')"
+    required: false
+    default: "scan -p . -r json"
+  ml_model_name:
+    description: "ml: custom collector/model identifier (optional)"
+    required: false
+    default: ""
+  ml_source_type:
+    description: "ml: source type for metadata"
+    required: false
+    default: "github"
+
+  # ------------------------------------------------------------------
+  # API Discovery (code2api)
+  # ------------------------------------------------------------------
+  api_command:
+    description: "api-discovery: command text passed to --command (e.g. '-path . -output results.json')"
+    required: false
+    default: "-path . -output results.json"
+
+  # ------------------------------------------------------------------
+  # SBOM (image and filesystem)
+  # ------------------------------------------------------------------
+  sbom_scan_type:
+    description: "sbom: target type, 'image' or 'filesystem'"
+    required: false
+    default: "filesystem"
+  sbom_image_ref:
+    description: "sbom: full registry image reference to scan (required when sbom_scan_type is image)"
+    required: false
+    default: ""
+  sbom_scan_path:
+    description: "sbom: filesystem path to scan (used when sbom_scan_type is filesystem)"
+    required: false
+    default: "."
+  sbom_command:
+    description: "sbom: raw command text passed to --command. When set, overrides sbom_scan_type/sbom_image_ref/sbom_scan_path."
+    required: false
+    default: ""
+  sbom_severity:
+    description: "sbom: comma-separated severities (UNKNOWN, LOW, MEDIUM, HIGH, CRITICAL)"
+    required: false
+    default: ""
+  sbom_project_name:
+    description: "sbom: project name (AccuKnox entity). Required for sbom"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    # ------------------------------------------------------------------
+    # Parse scan_type + install scanner (once)
+    # ------------------------------------------------------------------
+    - name: Setup AccuKnox Scanner
+      id: setup
+      shell: bash
+      env:
+        SCAN_TYPE: ${{ inputs.scan_type }}
+        ACCUKNOX_ENDPOINT: ${{ inputs.accuknox_endpoint }}
+        ACCUKNOX_TOKEN: ${{ inputs.accuknox_token }}
+        ACCUKNOX_LABEL: ${{ inputs.accuknox_label }}
+        SCANNER_VERSION: ${{ inputs.scanner_version }}
+      run: |
+        set -e
+        if [ -z "$ACCUKNOX_ENDPOINT" ] || [ -z "$ACCUKNOX_TOKEN" ] || [ -z "$ACCUKNOX_LABEL" ]; then
+          echo "ERROR: accuknox_endpoint, accuknox_token, and accuknox_label must be set!"
+          exit 1
+        fi
+
+        # Parse scan_type into exact tokens (lowercase, comma/space separated)
+        run_sast=false; run_sca=false; run_secret=false; run_iac=false
+        run_ml=false; run_api=false; run_sbom=false
+        NORM=$(echo "$SCAN_TYPE" | tr 'A-Z' 'a-z' | tr ',' ' ')
+        for t in $NORM; do
+          case "$t" in
+            sast)                       run_sast=true ;;
+            sca)                        run_sca=true ;;
+            secret|secrets)             run_secret=true ;;
+            iac)                        run_iac=true ;;
+            ml|ml-scan|mlscan)          run_ml=true ;;
+            api|api-discovery)          run_api=true ;;
+            sbom)                       run_sbom=true ;;
+            "")                         ;;
+            *) echo "WARNING: unknown scan type '$t' (valid: sast, sca, secret, iac, ml, api-discovery, sbom)" ;;
+          esac
+        done
+
+        if [ "$run_sast$run_sca$run_secret$run_iac$run_ml$run_api$run_sbom" = "falsefalsefalsefalsefalsefalsefalse" ]; then
+          echo "ERROR: scan_type did not match any known scan. Provide one or more of: sast, sca, secret, iac, ml, api-discovery, sbom."
+          exit 1
+        fi
+
+        {
+          echo "run_sast=$run_sast"
+          echo "run_sca=$run_sca"
+          echo "run_secret=$run_secret"
+          echo "run_iac=$run_iac"
+          echo "run_ml=$run_ml"
+          echo "run_api=$run_api"
+          echo "run_sbom=$run_sbom"
+        } >> "$GITHUB_OUTPUT"
+
+        echo "Downloading AccuKnox ASPM Scanner ($SCANNER_VERSION)..."
+        SCANNER_BIN="$RUNNER_TEMP/accuknox-aspm-scanner"
+        curl -L "https://github.com/accuknox/aspm-scanner-cli/releases/download/${SCANNER_VERSION}/accuknox-aspm-scanner" -o "$SCANNER_BIN"
+        chmod +x "$SCANNER_BIN"
+        echo "ACCUKNOX_SCANNER=$SCANNER_BIN" >> "$GITHUB_ENV"
+        echo "AccuKnox ASPM scanner installed at $SCANNER_BIN"
+
+    # ------------------------------------------------------------------
+    # SAST (OpenGrep)
+    # ------------------------------------------------------------------
+    - name: Run AccuKnox SAST Scan
+      if: ${{ steps.setup.outputs.run_sast == 'true' }}
+      shell: bash
+      env:
+        ACCUKNOX_ENDPOINT: ${{ inputs.accuknox_endpoint }}
+        ACCUKNOX_TOKEN: ${{ inputs.accuknox_token }}
+        ACCUKNOX_LABEL: ${{ inputs.accuknox_label }}
+        SOFT_FAIL: ${{ inputs.soft_fail }}
+        COMMAND: ${{ inputs.sast_command }}
+        SEVERITY: ${{ inputs.sast_severity }}
+      run: |
+        set -e
+        echo "Starting AccuKnox SAST (OpenGrep) scan..."
+
+        SOFT_FAIL="${SOFT_FAIL//[$'\t\r\n ']}"
+        SOFT_FAIL_ARG=""
+        [ "$SOFT_FAIL" = "true" ] && SOFT_FAIL_ARG="--softfail"
+
+        SEVERITY="${SEVERITY//[$'\t\r\n ']}"
+        SEVERITY_ARG=""
+        [ -n "$SEVERITY" ] && SEVERITY_ARG="--severity $SEVERITY"
+
+        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG sast \
+          --command "$COMMAND" \
+          --repo-url "https://github.com/${GITHUB_REPOSITORY}.git" \
+          --commit-sha "${GITHUB_SHA}" \
+          --pipeline-id "${GITHUB_RUN_ID}" \
+          --job-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+          --container-mode \
+          $SEVERITY_ARG
+
+    # ------------------------------------------------------------------
+    # SCA (Trivy filesystem)
+    # ------------------------------------------------------------------
+    - name: Run AccuKnox SCA Scan
+      if: ${{ steps.setup.outputs.run_sca == 'true' }}
+      shell: bash
+      env:
+        ACCUKNOX_ENDPOINT: ${{ inputs.accuknox_endpoint }}
+        ACCUKNOX_TOKEN: ${{ inputs.accuknox_token }}
+        ACCUKNOX_LABEL: ${{ inputs.accuknox_label }}
+        SOFT_FAIL: ${{ inputs.soft_fail }}
+        COMMAND: ${{ inputs.sca_command }}
+        SEVERITY: ${{ inputs.sca_severity }}
+      run: |
+        set -e
+        echo "Starting AccuKnox SCA scan..."
+
+        SOFT_FAIL="${SOFT_FAIL//[$'\t\r\n ']}"
+        SOFT_FAIL_ARG=""
+        [ "$SOFT_FAIL" = "true" ] && SOFT_FAIL_ARG="--softfail"
+
+        SEVERITY="${SEVERITY//[$'\t\r\n ']}"
+        SEVERITY_ARG=""
+        [ -n "$SEVERITY" ] && SEVERITY_ARG="--severity $SEVERITY"
+
+        echo "$ACCUKNOX_SCANNER scan $SOFT_FAIL_ARG sca --command \"$COMMAND\" --container-mode $SEVERITY_ARG"
+        "$ACCUKNOX_SCANNER" scan $SOFT_FAIL_ARG sca --command "$COMMAND" --container-mode $SEVERITY_ARG
+
+    # ------------------------------------------------------------------
+    # Secret (TruffleHog)
+    # ------------------------------------------------------------------
+    - name: Run AccuKnox Secret Scan
+      if: ${{ steps.setup.outputs.run_secret == 'true' }}
+      shell: bash
+      env:
+        ACCUKNOX_ENDPOINT: ${{ inputs.accuknox_endpoint }}
+        ACCUKNOX_TOKEN: ${{ inputs.accuknox_token }}
+        ACCUKNOX_LABEL: ${{ inputs.accuknox_label }}
+        SOFT_FAIL: ${{ inputs.soft_fail }}
+        COMMAND: ${{ inputs.secret_command }}
+        ADDITIONAL_ARGUMENTS: ${{ inputs.secret_additional_arguments }}
+      run: |
+        set -e
+        echo "Starting AccuKnox Secret scan..."
+
+        touch ./results.jsonl
+        chmod 666 ./results.jsonl
+
+        SOFT_FAIL="${SOFT_FAIL//[$'\t\r\n ']}"
+        SOFT_FAIL_ARG=""
+        [ "$SOFT_FAIL" = "true" ] && SOFT_FAIL_ARG="--softfail"
+
+        FULL_CMD="$COMMAND"
+        [ -n "$ADDITIONAL_ARGUMENTS" ] && FULL_CMD="$FULL_CMD $ADDITIONAL_ARGUMENTS"
+
+        echo "$ACCUKNOX_SCANNER scan --keep-results $SOFT_FAIL_ARG secret --command \"$FULL_CMD\" --container-mode"
+        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG secret --command "$FULL_CMD" --container-mode
+
+    # ------------------------------------------------------------------
+    # IaC (Checkov) - with frameworks
+    # ------------------------------------------------------------------
+    - name: Run AccuKnox IaC Scan
+      if: ${{ steps.setup.outputs.run_iac == 'true' }}
+      shell: bash
+      env:
+        ACCUKNOX_ENDPOINT: ${{ inputs.accuknox_endpoint }}
+        ACCUKNOX_TOKEN: ${{ inputs.accuknox_token }}
+        ACCUKNOX_LABEL: ${{ inputs.accuknox_label }}
+        SOFT_FAIL: ${{ inputs.soft_fail }}
+        RAW_COMMAND: ${{ inputs.iac_command }}
+        DIRECTORY: ${{ inputs.iac_directory }}
+        FILE: ${{ inputs.iac_file }}
+        FRAMEWORK: ${{ inputs.iac_framework }}
+        COMPACT: ${{ inputs.iac_compact }}
+        QUIET: ${{ inputs.iac_quiet }}
+      run: |
+        set -e
+        echo "Starting AccuKnox IaC scan..."
+
+        SOFT_FAIL="${SOFT_FAIL//[$'\t\r\n ']}"
+        SOFT_FAIL_ARG=""
+        [ "$SOFT_FAIL" = "true" ] && SOFT_FAIL_ARG="--softfail"
+
+        if [ -n "$RAW_COMMAND" ]; then
+          CMD_ARGS="$RAW_COMMAND"
+        else
+          CMD_ARGS=""
+          [ -n "$FILE" ] && CMD_ARGS="$CMD_ARGS --file $FILE"
+          [ -n "$DIRECTORY" ] && CMD_ARGS="$CMD_ARGS --directory $DIRECTORY"
+          [ "$COMPACT" = "true" ] && CMD_ARGS="$CMD_ARGS --compact"
+          [ "$QUIET" = "true" ] && CMD_ARGS="$CMD_ARGS --quiet"
+          # Support one or more comma-separated frameworks
+          if [ -n "$FRAMEWORK" ]; then
+            for fw in $(echo "$FRAMEWORK" | tr ',' ' '); do
+              CMD_ARGS="$CMD_ARGS --framework $fw"
+            done
+          fi
+        fi
+
+        echo "$ACCUKNOX_SCANNER scan $SOFT_FAIL_ARG iac --command \"$CMD_ARGS\" --container-mode --repo-url \"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git\" --repo-branch \"${GITHUB_REF#refs/heads/}\""
+        "$ACCUKNOX_SCANNER" scan $SOFT_FAIL_ARG iac --command "$CMD_ARGS" --container-mode --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" --repo-branch "${GITHUB_REF#refs/heads/}"
+
+    # ------------------------------------------------------------------
+    # ML Static Scan (ModelScan)
+    # ------------------------------------------------------------------
+    - name: Run AccuKnox ML Static Scan
+      if: ${{ steps.setup.outputs.run_ml == 'true' }}
+      shell: bash
+      env:
+        ACCUKNOX_ENDPOINT: ${{ inputs.accuknox_endpoint }}
+        ACCUKNOX_TOKEN: ${{ inputs.accuknox_token }}
+        ACCUKNOX_LABEL: ${{ inputs.accuknox_label }}
+        SOFT_FAIL: ${{ inputs.soft_fail }}
+        COMMAND: ${{ inputs.ml_command }}
+        MODEL_NAME: ${{ inputs.ml_model_name }}
+        SOURCE_TYPE: ${{ inputs.ml_source_type }}
+      run: |
+        set -e
+        echo "Starting AccuKnox ML Static scan..."
+
+        SOFT_FAIL="${SOFT_FAIL//[$'\t\r\n ']}"
+        SOFT_FAIL_ARG=""
+        [ "$SOFT_FAIL" = "true" ] && SOFT_FAIL_ARG="--softfail"
+
+        EXTRA=""
+        [ -n "$MODEL_NAME" ] && EXTRA="$EXTRA --model-name $MODEL_NAME"
+        [ -n "$SOURCE_TYPE" ] && EXTRA="$EXTRA --source-type $SOURCE_TYPE"
+
+        echo "$ACCUKNOX_SCANNER scan $SOFT_FAIL_ARG ml-scan --command \"$COMMAND\" --container-mode --repo-url \"${GITHUB_REPOSITORY}\" --commit-ref \"${GITHUB_REF#refs/heads/}\" $EXTRA"
+        "$ACCUKNOX_SCANNER" scan $SOFT_FAIL_ARG ml-scan \
+          --command "$COMMAND" \
+          --container-mode \
+          --repo-url "${GITHUB_REPOSITORY}" \
+          --commit-ref "${GITHUB_REF#refs/heads/}" \
+          $EXTRA
+
+    # ------------------------------------------------------------------
+    # API Discovery (code2api)
+    # ------------------------------------------------------------------
+    - name: Run AccuKnox API Discovery Scan
+      if: ${{ steps.setup.outputs.run_api == 'true' }}
+      shell: bash
+      env:
+        ACCUKNOX_ENDPOINT: ${{ inputs.accuknox_endpoint }}
+        ACCUKNOX_TOKEN: ${{ inputs.accuknox_token }}
+        ACCUKNOX_LABEL: ${{ inputs.accuknox_label }}
+        SOFT_FAIL: ${{ inputs.soft_fail }}
+        COMMAND: ${{ inputs.api_command }}
+      run: |
+        set -e
+        echo "Starting AccuKnox API Discovery scan..."
+
+        SOFT_FAIL="${SOFT_FAIL//[$'\t\r\n ']}"
+        SOFT_FAIL_ARG=""
+        [ "$SOFT_FAIL" = "true" ] && SOFT_FAIL_ARG="--softfail"
+
+        echo "$ACCUKNOX_SCANNER scan --keep-results $SOFT_FAIL_ARG api-discovery --command \"$COMMAND\" --container-mode --repo-url \"${GITHUB_REPOSITORY}\""
+        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG api-discovery \
+          --command "$COMMAND" \
+          --container-mode \
+          --repo-url "${GITHUB_REPOSITORY}"
+
+    # ------------------------------------------------------------------
+    # SBOM (image and filesystem)
+    # ------------------------------------------------------------------
+    - name: Run AccuKnox SBOM Scan
+      if: ${{ steps.setup.outputs.run_sbom == 'true' }}
+      shell: bash
+      env:
+        ACCUKNOX_ENDPOINT: ${{ inputs.accuknox_endpoint }}
+        ACCUKNOX_TOKEN: ${{ inputs.accuknox_token }}
+        ACCUKNOX_LABEL: ${{ inputs.accuknox_label }}
+        SOFT_FAIL: ${{ inputs.soft_fail }}
+        SBOM_SCAN_TYPE: ${{ inputs.sbom_scan_type }}
+        IMAGE_REF: ${{ inputs.sbom_image_ref }}
+        SCAN_PATH: ${{ inputs.sbom_scan_path }}
+        RAW_COMMAND: ${{ inputs.sbom_command }}
+        SEVERITY: ${{ inputs.sbom_severity }}
+        PROJECT_NAME: ${{ inputs.sbom_project_name }}
+      run: |
+        set -e
+        echo "Starting AccuKnox SBOM scan..."
+
+        SOFT_FAIL="${SOFT_FAIL//[$'\t\r\n ']}"
+        SOFT_FAIL_ARG=""
+        [ "$SOFT_FAIL" = "true" ] && SOFT_FAIL_ARG="--softfail"
+
+        if [ -z "$PROJECT_NAME" ]; then
+          echo "ERROR: sbom_project_name is required for sbom."
+          exit 1
+        fi
+
+        SEVERITY="${SEVERITY//[$'\t\r\n ']}"
+
+        if [ -n "$RAW_COMMAND" ]; then
+          CMD="$RAW_COMMAND"
+        else
+          SBOM_SCAN_TYPE="${SBOM_SCAN_TYPE//[$'\t\r\n ']}"
+          if [ "$SBOM_SCAN_TYPE" = "image" ]; then
+            if [ -z "$IMAGE_REF" ]; then
+              echo "ERROR: sbom_image_ref is required when sbom_scan_type is image."
+              exit 1
+            fi
+            CMD="image ${IMAGE_REF}"
+          elif [ "$SBOM_SCAN_TYPE" = "filesystem" ] || [ "$SBOM_SCAN_TYPE" = "path" ] || [ "$SBOM_SCAN_TYPE" = "fs" ]; then
+            CMD="filesystem ${SCAN_PATH}"
+          else
+            echo "ERROR: Invalid sbom_scan_type: $SBOM_SCAN_TYPE. Expected image or filesystem."
+            exit 1
+          fi
+          [ -n "$SEVERITY" ] && CMD="$CMD --severity $SEVERITY"
+        fi
+
+        echo "$ACCUKNOX_SCANNER scan $SOFT_FAIL_ARG --keep-results --project-name \"$PROJECT_NAME\" container --command \"$CMD\" --generate-sbom --container-mode"
+        "$ACCUKNOX_SCANNER" scan $SOFT_FAIL_ARG --keep-results --project-name "$PROJECT_NAME" container --command "$CMD" --generate-sbom --container-mode
+
+        [ -f results.json ] && cp results.json results-sbom.json || true
+
+    # ------------------------------------------------------------------
+    # Upload kept result files (optional)
+    # ------------------------------------------------------------------
+    - name: Upload AccuKnox scan results
+      if: ${{ inputs.upload_artifact == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: accuknox-scan-results
+        path: |
+          results*.json
+          results*.jsonl
+        if-no-files-found: warn
+        retention-days: 30
