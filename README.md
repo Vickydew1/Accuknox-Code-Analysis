@@ -109,7 +109,7 @@ Each example below is a complete, copy-paste workflow. The **per-scanner** examp
 
 All examples assume the following secrets are configured: `ACCUKNOX_TOKEN`, `ACCUKNOX_ENDPOINT`, `ACCUKNOX_LABEL`.
 
-### 1. SAST (OpenGrep)
+### 1. SAST
 
 ```yaml
 name: AccuKnox SAST
@@ -128,12 +128,11 @@ jobs:
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
-          sast_command: "."
           sast_severity: "HIGH,CRITICAL"
           soft_fail: true
 ```
 
-### 2. SCA (Trivy)
+### 2. SCA
 
 ```yaml
 name: AccuKnox SCA
@@ -152,12 +151,11 @@ jobs:
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
-          sca_command: "fs ."
           sca_severity: "HIGH,CRITICAL"
           soft_fail: true
 ```
 
-### 3. Secret (TruffleHog)
+### 3. Secret
 
 ```yaml
 name: AccuKnox Secret Scan
@@ -178,12 +176,11 @@ jobs:
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
-          secret_command: "git file://."
           secret_additional_arguments: "--results verified"
           soft_fail: true
 ```
 
-### 4. IaC (Checkov)
+### 4. IaC
 
 ```yaml
 name: AccuKnox IaC
@@ -202,12 +199,11 @@ jobs:
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
-          iac_directory: "."
           iac_framework: "Kubernetes,Terraform"
           soft_fail: true
 ```
 
-### 5. ML Static Scan (ModelScan)
+### 5. ML Static Scan
 
 ```yaml
 name: AccuKnox ML Static Scan
@@ -226,12 +222,10 @@ jobs:
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
-          ml_command: "scan -p . -r json"
-          ml_source_type: "github"
           soft_fail: true
 ```
 
-### 6. API Discovery (code2api)
+### 6. API Discovery
 
 ```yaml
 name: AccuKnox API Discovery
@@ -250,11 +244,22 @@ jobs:
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
-          api_command: "-path . -output results.json"
           soft_fail: true
 ```
 
-### 7. SBOM (CycloneDX)
+### 7. SBOM
+
+> **Prerequisite — Create a Project.** To associate SBOM data with the correct entity, you must create a **Project** in the AccuKnox Console first.
+>
+> 1. Log in to the **AccuKnox Dashboard**.
+> 2. Navigate to **SBOM → Projects**.
+> 3. Click **New Project**.
+> 4. Fill in the required details:
+>    - **Name\*** – Project name (use this value as `sbom_project_name` in the workflow).
+>    - **Description** – Short description of the project.
+>    - **Classifier\*** – Select **Container** for an **image** SBOM, or **Application** for a **filesystem** SBOM.
+>    - **Tags** – (Optional) Add relevant tags.
+> 5. Click **Create**.
 
 ```yaml
 name: AccuKnox SBOM
@@ -313,23 +318,11 @@ jobs:
           soft_fail: true
           upload_artifact: true
 
-          # SAST
+          # SAST – override default severity (HIGH)
           sast_severity: "HIGH,CRITICAL"
 
-          # SCA
-          sca_command: "fs ."
-
-          # Secret
-          secret_command: "git file://."
-
-          # IaC
+          # IaC – restrict to specific frameworks
           iac_framework: "Kubernetes,Terraform"
-
-          # ML
-          ml_command: "scan -p . -r json"
-
-          # API Discovery
-          api_command: "-path . -output results.json"
 
           # SBOM (project_name required)
           sbom_scan_type: "filesystem"
@@ -433,23 +426,9 @@ jobs:
 
 ---
 
-## 🛠️ Troubleshooting & Best Practices
-
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| `accuknox_endpoint, accuknox_token, and accuknox_label must be set` | Required secrets missing | Add `ACCUKNOX_TOKEN`, `ACCUKNOX_ENDPOINT`, `ACCUKNOX_LABEL` in repo secrets |
-| `scan_type did not match any known scan` | Empty or misspelled `scan_type` | Use one or more of: `sast, sca, secret, iac, ml, api-discovery, sbom` |
-| `sbom_project_name is required for sbom` | SBOM selected without a project | Set `sbom_project_name` when `sbom` is in `scan_type` |
-| `sbom_image_ref is required when sbom_scan_type is image` | Image SBOM without a reference | Provide `sbom_image_ref` (build the image earlier in the same job) |
-| Scanner download fails (404) | `scanner_version` tag has no `accuknox-aspm-scanner` binary | Point `scanner_version` at a release that publishes the binary |
-| Workflow fails even on minor findings | `soft_fail` not set | Set `soft_fail: true` to continue despite findings |
-| No results in AccuKnox Console | Invalid credentials or label | Verify token, endpoint, and label values |
-
----
-
 ## 📖 Support & Documentation
 
-- 📚 **Read More:** [AccuKnox Docs](https://www.accuknox.com/docs)
+- 📚 **Read More:** [AccuKnox Docs](https://help.accuknox.com/integrations/github-overview/)
 - 📧 **Contact Support:** support@accuknox.com
 
 ---
@@ -459,4 +438,4 @@ jobs:
 The **AccuKnox Code Analysis GitHub Action** consolidates seven security scanners into a single, configurable step — letting you run SAST, SCA, Secret, IaC, ML, API Discovery, and SBOM scans together, surface findings in the AccuKnox Console, and enforce policy gates across your CI/CD pipeline.
 
 **🔐 Shift Left with AccuKnox – Secure Your Code from Commit to Cloud! ☁️🛡️**
-# Accuknox-Code-Analysis
+
