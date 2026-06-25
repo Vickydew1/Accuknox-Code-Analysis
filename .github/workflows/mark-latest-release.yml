@@ -1,0 +1,27 @@
+name: Mark Latest Release
+
+# Automatically mark any newly published release as the "latest" release.
+# Runs whenever a release is published or edited.
+
+on:
+  release:
+    types: [published, edited]
+
+permissions:
+  contents: write   # required to edit releases
+
+jobs:
+  mark-latest:
+    runs-on: ubuntu-latest
+    # Skip drafts and pre-releases — only stable releases become "latest"
+    if: ${{ !github.event.release.draft && !github.event.release.prerelease }}
+    steps:
+      - name: Mark release as latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "Marking release '$TAG' as latest..."
+          gh release edit "$TAG" --repo "$REPO" --latest
+          echo "Release '$TAG' is now the latest release."
