@@ -15,7 +15,6 @@ Instead of wiring up a separate action for every scanner, configure **one step**
 - 📦 **SBOM for Image & Filesystem** – Generate a CycloneDX SBOM from a container image or your source tree.
 - 🔒 **Shift Left Security** – Integrate all checks directly into your CI/CD pipeline for early detection.
 - 📥 **Seamless AccuKnox Console Integration** – Findings flow automatically to the AccuKnox dashboard.
-- 🚦 **Hard-Fail or Soft-Fail** – One `soft_fail` switch governs every selected scan.
 
 ---
 
@@ -89,9 +88,6 @@ jobs:
           # Common options
           soft_fail: true            # Continue the pipeline on findings
           upload_artifact: true      # Upload kept result files as an artifact
-
-          # IaC – restrict to one or more frameworks
-          iac_framework: "Kubernetes,Terraform"
 
           # SBOM – image or filesystem (project_name required)
           sbom_scan_type: "image"
