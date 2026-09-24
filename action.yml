@@ -154,6 +154,30 @@ inputs:
     required: false
     default: ""
 
+  # ------------------------------------------------------------------
+  # PR Decorator (optional) - posts findings as a GitHub PR review
+  # ------------------------------------------------------------------
+  pr_decorator:
+    description: "Post findings as a GitHub PR review (summary comment + inline comments) after the scan(s) above. Requires the calling workflow to grant 'permissions: pull-requests: write'. No-op on anything that isn't a pull_request build."
+    required: false
+    default: "false"
+  pr_decorator_mode:
+    description: "pr_decorator: 'advisory' (comment only) or 'blocking' (REQUEST_CHANGES when a CRITICAL/HIGH finding is present)"
+    required: false
+    default: "advisory"
+  llm_api_key:
+    description: "pr_decorator: optional. If set, calls an LLM to generate a remediation suggestion for SAST findings with no native fix. Unset (default) = that step is skipped entirely - no LLM call, no cost, findings post as-is. Set together with llm_base_url and llm_model - see those two before setting this."
+    required: false
+    default: ""
+  llm_model:
+    description: "pr_decorator: required if llm_api_key is set to anything other than an OpenRouter key. The model name in whatever form llm_base_url's provider expects (e.g. 'gpt-4o-mini' for OpenAI directly, 'claude-sonnet-4-5' for an Anthropic-compatible gateway, 'openai/gpt-4o-mini' for OpenRouter, a local model name for self-hosted). No default - OpenRouter's own default (openai/gpt-4o-mini) only applies when llm_base_url is also left unset."
+    required: false
+    default: ""
+  llm_base_url:
+    description: "pr_decorator: required if llm_api_key is not an OpenRouter key. Any OpenAI-compatible chat-completions endpoint - OpenAI, Azure OpenAI, a self-hosted vLLM/Ollama/LM Studio server, Groq, Together, etc. Leaving this unset sends llm_api_key to OpenRouter's endpoint - only correct for an OpenRouter key. A native (non-OpenRouter) key sent there fails auth silently, so set this explicitly for any other provider."
+    required: false
+    default: ""
+
 runs:
   using: "composite"
   steps:
@@ -217,9 +241,16 @@ runs:
           echo "run_sbom=$run_sbom"
         } >> "$GITHUB_OUTPUT"
 
-        echo "Downloading AccuKnox ASPM Scanner ($SCANNER_VERSION)..."
+        # PRE-PRODUCTION TEST ONLY: decorate-pr hasn't shipped in a real
+        # aspm-scanner-cli release yet, so this uses a binary committed
+        # straight into this action's own repo (test-bin/) instead of
+        # downloading a tagged release. Revert to the curl download below
+        # once decorate-pr is in a real release, and delete test-bin/.
+        echo "Installing AccuKnox ASPM Scanner (pre-production test build)..."
         SCANNER_BIN="$RUNNER_TEMP/accuknox-aspm-scanner"
-        curl -L "https://github.com/accuknox/aspm-scanner-cli/releases/download/${SCANNER_VERSION}/accuknox-aspm-scanner" -o "$SCANNER_BIN"
+        cp "${{ github.action_path }}/test-bin/accuknox-aspm-scanner" "$SCANNER_BIN"
+        # Real release download, disabled for now:
+        # curl -L "https://github.com/accuknox/aspm-scanner-cli/releases/download/${SCANNER_VERSION}/accuknox-aspm-scanner" -o "$SCANNER_BIN"
         chmod +x "$SCANNER_BIN"
         echo "ACCUKNOX_SCANNER=$SCANNER_BIN" >> "$GITHUB_ENV"
         echo "AccuKnox ASPM scanner installed at $SCANNER_BIN"
@@ -253,6 +284,12 @@ runs:
           --container-mode \
           $SEVERITY_ARG
 
+        # SCA also defaults to ./results.json - rename immediately so a
+        # later "scan_type: sast,sca" run doesn't have SCA silently
+        # overwrite this file before it's uploaded as an artifact or read
+        # by the PR Decorator step below.
+        [ -f results.json ] && mv results.json sast-results.json || true
+
     # ------------------------------------------------------------------
     # SCA (Trivy filesystem)
     # ------------------------------------------------------------------
@@ -281,6 +318,9 @@ runs:
           --repo-branch "${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" \
           --container-mode \
           $SEVERITY_ARG
+
+        # See the matching rename in the SAST step - same default filename.
+        [ -f results.json ] && mv results.json sca-results.json || true
 
     # ------------------------------------------------------------------
     # Secret (TruffleHog)
@@ -346,7 +386,9 @@ runs:
           fi
         fi
 
-        "$ACCUKNOX_SCANNER" scan $SOFT_FAIL_ARG iac --command "$CMD_ARGS" --container-mode --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" --repo-branch "${GITHUB_REF#refs/heads/}"
+        # --keep-results: without it the file is deleted right after
+        # upload, before the PR Decorator step below can read it.
+        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG iac --command "$CMD_ARGS" --container-mode --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" --repo-branch "${GITHUB_REF#refs/heads/}"
 
     # ------------------------------------------------------------------
     # ML Static Scan (ModelScan)
@@ -472,7 +514,69 @@ runs:
       with:
         name: accuknox-scan-results
         path: |
-          results*.json
-          results*.jsonl
+          *results*.json
+          *results*.jsonl
         if-no-files-found: warn
         retention-days: 30
+
+    # ------------------------------------------------------------------
+    # PR Decorator (optional) - posts findings as a GitHub PR review
+    # ------------------------------------------------------------------
+    - name: Decorate Pull Request
+      if: ${{ inputs.pr_decorator == 'true' }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        MODE: ${{ inputs.pr_decorator_mode }}
+        LLM_API_KEY: ${{ inputs.llm_api_key }}
+        LLM_MODEL: ${{ inputs.llm_model }}
+        LLM_BASE_URL: ${{ inputs.llm_base_url }}
+      run: |
+        set -e
+        echo "Decorating pull request with scan findings..."
+
+        # Only the scan types decorate-pr supports, from whichever kept
+        # result files this run actually produced - not every scan_type
+        # runs every job, and ml/api-discovery/sbom aren't wired up yet
+        # (see aspm-scanner-cli/docs/pr-decorator.md).
+        RESULT_FILES=""
+        SCAN_TYPES=""
+        add_result() {
+          [ -f "$1" ] || return 0
+          RESULT_FILES="${RESULT_FILES:+$RESULT_FILES,}$1"
+          SCAN_TYPES="${SCAN_TYPES:+$SCAN_TYPES,}$2"
+        }
+        add_result sast-results.json sast
+        add_result sca-results.json sca
+        add_result results_json.json iac
+        add_result results.jsonl secret
+
+        if [ -z "$RESULT_FILES" ]; then
+          echo "No decorate-pr-supported scan result files found (sast/sca/iac/secret) - skipping."
+          exit 0
+        fi
+
+        # Quality gate stays at decorate-pr's own defaults (0 CRITICAL, 0
+        # HIGH, unlimited MEDIUM/LOW) - not customer-configurable here. If a
+        # different gate is ever needed, add --max-* flags back explicitly.
+        LLM_ARGS=""
+        if [ -n "$LLM_API_KEY" ]; then
+          LLM_ARGS="--llm-api-key $LLM_API_KEY"
+          if [ -n "$LLM_BASE_URL" ]; then
+            LLM_ARGS="$LLM_ARGS --llm-base-url $LLM_BASE_URL"
+            [ -n "$LLM_MODEL" ] && LLM_ARGS="$LLM_ARGS --llm-model $LLM_MODEL"
+          else
+            # No llm_base_url -> decorate-pr sends this key to OpenRouter's
+            # endpoint. Only correct for an actual OpenRouter key - a native
+            # OpenAI/Azure/self-hosted key sent there fails auth silently
+            # (a log warning, remediation just doesn't get generated), so
+            # this is loud on purpose.
+            echo "::warning::llm_api_key is set without llm_base_url - assuming this is an OpenRouter key. If it's an OpenAI/Azure/self-hosted/other key, set llm_base_url (and usually llm_model) too, or remediation calls will silently fail auth."
+          fi
+        fi
+
+        "$ACCUKNOX_SCANNER" decorate-pr \
+          --result-file "$RESULT_FILES" \
+          --scan-type "$SCAN_TYPES" \
+          --mode "$MODE" \
+          $LLM_ARGS
