@@ -203,7 +203,7 @@ runs:
 
         # Parse scan_type into exact tokens (lowercase, comma/space separated)
         run_sast=false; run_sca=false; run_secret=false; run_iac=false
-        run_ml=false; run_api=false; run_sbom=false
+        run_ml=false; run_api=false; run_sbom=false; run_quality=false
         NORM=$(echo "$SCAN_TYPE" | tr 'A-Z' 'a-z' | tr ',' ' ')
         for t in $NORM; do
           case "$t" in
@@ -214,12 +214,13 @@ runs:
             ml|ml-scan|mlscan)          run_ml=true ;;
             api|api-discovery)          run_api=true ;;
             sbom)                       run_sbom=true ;;
+            quality)                    run_quality=true ;;
             "")                         ;;
-            *) echo "WARNING: unknown scan type '$t' (valid: sast, sca, secret, iac, ml, api-discovery, sbom)" ;;
+            *) echo "WARNING: unknown scan type '$t' (valid: sast, sca, secret, iac, ml, api-discovery, sbom, quality)" ;;
           esac
         done
 
-        case "$run_sast$run_sca$run_secret$run_iac$run_ml$run_api$run_sbom" in
+        case "$run_sast$run_sca$run_secret$run_iac$run_ml$run_api$run_sbom$run_quality" in
           *true*) ;;
           *) echo "ERROR: scan_type did not match any known scan. Provide one or more of: sast, sca, secret, iac, ml, api-discovery, sbom."; exit 1 ;;
         esac
@@ -239,6 +240,7 @@ runs:
           echo "run_ml=$run_ml"
           echo "run_api=$run_api"
           echo "run_sbom=$run_sbom"
+          echo "run_quality=$run_quality"
         } >> "$GITHUB_OUTPUT"
 
         # PRE-PRODUCTION TEST ONLY: decorate-pr hasn't shipped in a real
@@ -520,10 +522,41 @@ runs:
         retention-days: 30
 
     # ------------------------------------------------------------------
+    # Code Quality (optional) - AI review of the PR diff, fed into the PR
+    # Decorator below. Needs scan_type to include 'quality' AND llm_api_key;
+    # without a key it is skipped (AI stays optional).
+    # ------------------------------------------------------------------
+    - name: Code Quality Review
+      if: ${{ inputs.pr_decorator == 'true' && steps.setup.outputs.run_quality == 'true' && github.event.pull_request.base.sha != '' }}
+      shell: bash
+      env:
+        LLM_API_KEY: ${{ inputs.llm_api_key }}
+        LLM_MODEL: ${{ inputs.llm_model }}
+        LLM_BASE_URL: ${{ inputs.llm_base_url }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        if [ -z "$LLM_API_KEY" ]; then
+          echo "::notice::scan_type includes 'quality' but llm_api_key is not set - skipping the code quality review."
+          exit 0
+        fi
+        # Best effort: a quality-review failure must never fail the scan.
+        npm install -g @alibaba-group/open-code-review >/dev/null 2>&1 || { echo "::warning::code quality tooling unavailable - skipping."; exit 0; }
+        ocr config unset provider
+        ocr config set llm.url "${LLM_BASE_URL:-https://openrouter.ai/api/v1/chat/completions}"
+        ocr config set llm.model "${LLM_MODEL:-openai/gpt-4o-mini}"
+        ocr config set llm.protocol openai
+        ocr config set llm.extra_body '{"thinking": {"type": "disabled"}}'
+        ocr config set llm.auth_token_cmd 'printf "%s" "$LLM_API_KEY"'
+        ocr review --from "$BASE_SHA" --to "$HEAD_SHA" --format json --output quality-results.json \
+          || { echo "::warning::code quality review failed - skipping."; rm -f quality-results.json; }
+        exit 0
+
+    # ------------------------------------------------------------------
     # PR Decorator (optional) - posts findings as a GitHub PR review
     # ------------------------------------------------------------------
     - name: Decorate Pull Request
-      if: ${{ inputs.pr_decorator == 'true' }}
+      if: ${{ !cancelled() && inputs.pr_decorator == 'true' }}
       shell: bash
       env:
         GITHUB_TOKEN: ${{ github.token }}
@@ -550,6 +583,7 @@ runs:
         add_result sca-results.json sca
         add_result results_json.json iac
         add_result results.jsonl secret
+        add_result quality-results.json quality
 
         if [ -z "$RESULT_FILES" ]; then
           echo "No decorate-pr-supported scan result files found (sast/sca/iac/secret) - skipping."
