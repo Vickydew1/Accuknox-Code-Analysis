@@ -257,6 +257,18 @@ runs:
         echo "ACCUKNOX_SCANNER=$SCANNER_BIN" >> "$GITHUB_ENV"
         echo "AccuKnox ASPM scanner installed at $SCANNER_BIN"
 
+        # Native scanner tools (no Docker pulls, so no registry rate limits).
+        # ml / api-discovery have no native installer and keep --container-mode.
+        TOOLS=""
+        [ "$run_sast" = true ] && TOOLS="$TOOLS sast"
+        [ "$run_iac" = true ] && TOOLS="$TOOLS iac"
+        [ "$run_secret" = true ] && TOOLS="$TOOLS secret"
+        if [ "$run_sca" = true ] || [ "$run_sbom" = true ]; then TOOLS="$TOOLS container"; fi
+        for t in $TOOLS; do
+          echo "Installing scanner tool: $t"
+          "$SCANNER_BIN" tool install --type "$t"
+        done
+
     # ------------------------------------------------------------------
     # SAST (OpenGrep)
     # ------------------------------------------------------------------
@@ -283,7 +295,6 @@ runs:
           --commit-sha "${GITHUB_SHA}" \
           --pipeline-id "${GITHUB_RUN_ID}" \
           --job-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-          --container-mode \
           $SEVERITY_ARG
 
         # SCA also defaults to ./results.json - rename immediately so a
@@ -318,7 +329,6 @@ runs:
           --command "$COMMAND" \
           --repo-url "https://github.com/${GITHUB_REPOSITORY}" \
           --repo-branch "${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" \
-          --container-mode \
           $SEVERITY_ARG
 
         # See the matching rename in the SAST step - same default filename.
@@ -346,7 +356,7 @@ runs:
         FULL_CMD="$COMMAND"
         [ -n "$ADDITIONAL_ARGUMENTS" ] && FULL_CMD="$FULL_CMD $ADDITIONAL_ARGUMENTS"
 
-        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG secret --command "$FULL_CMD" --container-mode
+        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG secret --command "$FULL_CMD"
 
     # ------------------------------------------------------------------
     # IaC (Checkov) - with frameworks
@@ -390,7 +400,7 @@ runs:
 
         # --keep-results: without it the file is deleted right after
         # upload, before the PR Decorator step below can read it.
-        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG iac --command "$CMD_ARGS" --container-mode --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" --repo-branch "${GITHUB_REF#refs/heads/}"
+        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG iac --command "$CMD_ARGS" --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" --repo-branch "${GITHUB_REF#refs/heads/}"
 
     # ------------------------------------------------------------------
     # ML Static Scan (ModelScan)
@@ -503,7 +513,7 @@ runs:
           [ -n "$SEVERITY" ] && CMD="$CMD --severity $SEVERITY"
         fi
 
-        "$ACCUKNOX_SCANNER" scan $SOFT_FAIL_ARG --keep-results --project-name "$PROJECT_NAME" container --command "$CMD" --generate-sbom --container-mode
+        "$ACCUKNOX_SCANNER" scan $SOFT_FAIL_ARG --keep-results --project-name "$PROJECT_NAME" container --command "$CMD" --generate-sbom
 
         [ -f results.json ] && cp results.json results-sbom.json || true
 
