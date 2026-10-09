@@ -450,10 +450,29 @@ Covers `sast`, `sca`, `iac`, `secret` and `quality`. It is a no-op on anything t
 | Input | Description | Optional/Required | Default |
 |-------|-------------|-------------------|---------|
 | `pr_decorator` | Post findings as a pull request review (summary + inline comments). Needs `permissions: pull-requests: write` | Optional | `false` |
+| `github_token` | Token used to post the review. Default: the workflow `GITHUB_TOKEN` (comments show as `github-actions[bot]`). Pass a GitHub App installation token to post under your own bot name and logo - see below | Optional | `${{ github.token }}` |
 | `pr_decorator_mode` | `advisory` (comment only) or `blocking` (request changes when the quality gate fails) | Optional | `advisory` |
 | `llm_api_key` | Enables AI remediation, the PR summary and the `quality` review. Unset = no AI step runs and nothing is sent anywhere | Optional | `""` |
 | `llm_base_url` | Full chat-completions URL of any OpenAI-compatible endpoint. Unset = OpenRouter, so set it for any other provider's key | Optional | `""` |
 | `llm_model` | Model name in the form your provider expects (e.g. `openai/gpt-4o-mini` on OpenRouter, `gpt-4o-mini` on OpenAI). Used together with `llm_base_url` | Optional | `""` |
+
+**Posting as your own bot (GitHub App).** Create a GitHub App with *Pull requests: Read & write* permission, install it on the repository, and store its ID and private key as secrets (`APP_ID`, `APP_PRIVATE_KEY`). Then mint a short-lived token in the workflow and pass it in:
+
+```yaml
+      - id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: accuknox/accuknox-code-analysis@latest
+        with:
+          # ...scan inputs...
+          pr_decorator: true
+          github_token: ${{ steps.app-token.outputs.token }}
+```
+
+The review and comments then appear as your App (for example `accuknox[bot]`) with its logo.
 
 `quality` findings are advisory: they never count above MEDIUM, so they cannot fail the quality gate on their own.
 
