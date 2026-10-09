@@ -15,6 +15,9 @@ Instead of wiring up a separate action for every scanner, configure **one step**
 - 📦 **SBOM for Image & Filesystem** – Generate a CycloneDX SBOM from a container image or your source tree.
 - 🔒 **Shift Left Security** – Integrate all checks directly into your CI/CD pipeline for early detection.
 - 📥 **Seamless AccuKnox Console Integration** – Findings flow automatically to the AccuKnox dashboard.
+- 💬 **PR Decorator** – Post findings straight onto the pull request as one review: a summary comment with a quality gate, plus inline comments on the changed lines. Only files changed in the PR are reported.
+- 🧹 **Code Quality Review (optional, AI)** – Add `quality` to `scan_type` to get an AI review of the PR diff (bugs, maintainability, performance) in the same review. Skipped automatically when no LLM key is set.
+- 🤖 **AI Remediation (optional)** – With an LLM key, findings without a native fix get a suggested remediation and the PR gets a plain-language summary.
 
 ---
 
@@ -323,19 +326,65 @@ jobs:
 
 ---
 
+### 9. PR Decorator — Findings on the Pull Request
+
+```yaml
+name: AccuKnox PR Decorator
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  pull-requests: write        # required to post the review
+
+jobs:
+  scan-and-decorate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          fetch-depth: 0      # needed so the PR's base commit exists for the diff
+
+      - name: Run AccuKnox Code Analysis
+        uses: accuknox/accuknox-code-analysis@latest
+        with:
+          scan_type: "sast, sca, iac, secret, quality"
+          accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
+          accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
+          accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
+          soft_fail: true
+
+          pr_decorator: true
+
+          # Optional – enables AI remediation, the PR summary and the quality review.
+          # Leave all three out to run without AI; `quality` is then skipped.
+          llm_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          llm_base_url: https://openrouter.ai/api/v1/chat/completions
+          llm_model: openai/gpt-4o-mini
+```
+
+The decorator posts:
+
+- a **summary comment** (updated in place on every run) with the changed files, the findings by file, and a **Quality Gate** (default thresholds: 0 CRITICAL, 0 HIGH);
+- **inline comments** on the changed lines, one per finding, with the suggested fix when one exists. Findings already commented on in an earlier run are not posted again.
+
+Covers `sast`, `sca`, `iac`, `secret` and `quality`. It is a no-op on anything that is not a pull request, and fork PRs cannot be decorated because GitHub gives them a read-only token. Findings in files the PR did not change are still uploaded to AccuKnox but are not shown on the PR.
+
+---
+
 ## ⚙️ Configuration Options (Inputs)
 
 ### Common
 
 | Input | Description | Optional/Required | Default |
 |-------|-------------|-------------------|---------|
-| `scan_type` | Scans to run (comma/space separated): `sast`, `sca`, `secret`, `iac`, `ml`, `api-discovery`, `sbom` | Required | — |
+| `scan_type` | Scans to run (comma/space separated): `sast`, `sca`, `secret`, `iac`, `ml`, `api-discovery`, `sbom`, `quality` (PR diff review, needs `pr_decorator` and `llm_api_key`) | Required | — |
 | `accuknox_token` | API token for authenticating with AccuKnox SaaS | Required | — |
 | `accuknox_endpoint` | URL of the AccuKnox Console to push results | Required | — |
 | `accuknox_label` | Label used in AccuKnox SaaS to organise and identify results | Required | — |
 | `scanner_version` | Git tag of the `accuknox-aspm-scanner` binary to download (must include `sca`, `ml`, `api-discovery`) | Optional | `v0.14.7-rc.3` |
 | `soft_fail` | Prevent CI from failing on findings (applies to all scans) | Optional | `true` |
-| `upload_artifact` | Upload kept result files (`results*.json`, `results*.jsonl`) as a GitHub artifact | Optional | `false` |
+| `upload_artifact` | Upload kept result files (`*results*.json`, `*results*.jsonl`) as a GitHub artifact | Optional | `false` |
 
 ### SAST (`sast`)
 
@@ -396,13 +445,25 @@ jobs:
 
 \* Required only when `sbom` is included in `scan_type`.
 
+### PR Decorator & Code Quality (`pr_decorator`, `quality`)
+
+| Input | Description | Optional/Required | Default |
+|-------|-------------|-------------------|---------|
+| `pr_decorator` | Post findings as a pull request review (summary + inline comments). Needs `permissions: pull-requests: write` | Optional | `false` |
+| `pr_decorator_mode` | `advisory` (comment only) or `blocking` (request changes when the quality gate fails) | Optional | `advisory` |
+| `llm_api_key` | Enables AI remediation, the PR summary and the `quality` review. Unset = no AI step runs and nothing is sent anywhere | Optional | `""` |
+| `llm_base_url` | Full chat-completions URL of any OpenAI-compatible endpoint. Unset = OpenRouter, so set it for any other provider's key | Optional | `""` |
+| `llm_model` | Model name in the form your provider expects (e.g. `openai/gpt-4o-mini` on OpenRouter, `gpt-4o-mini` on OpenAI). Used together with `llm_base_url` | Optional | `""` |
+
+`quality` findings are advisory: they never count above MEDIUM, so they cannot fail the quality gate on their own.
+
 ---
 
 ## 🔍 How It Works
 
 1. **Developer pushes code** – A push or pull request triggers the GitHub Action.
-2. **Scanner setup (once)** – The action validates credentials, parses `scan_type`, and downloads the `accuknox-aspm-scanner` binary for the requested `scanner_version`.
-3. **Selected scans run** – Each enabled scan executes in `--command` mode inside a container, building its arguments from your `<type>_command` and scan-specific inputs:
+2. **Scanner setup (once)** – The action validates credentials, parses `scan_type`, and downloads the `accuknox-aspm-scanner` binary for the requested `scanner_version`, then installs the native scanner tools it needs (no Docker image pulls; ML and API Discovery still run in containers).
+3. **Selected scans run** – Each enabled scan executes in `--command` mode, building its arguments from your `<type>_command` and scan-specific inputs:
    - **SAST** → OpenGrep static analysis
    - **SCA** → Trivy dependency/composition analysis
    - **Secret** → TruffleHog secret detection
@@ -410,10 +471,12 @@ jobs:
    - **ML** → ModelScan static ML model analysis
    - **API Discovery** → code2api route/endpoint discovery
    - **SBOM** → CycloneDX bill of materials for an image or filesystem
+   - **Quality** → AI review of the PR diff (only with `pr_decorator` and an LLM key)
 4. **Results uploaded to AccuKnox Console** – Using the provided `accuknox_token` and `accuknox_label`.
 5. **Optional artifact upload** – If `upload_artifact: true`, kept result files are saved as a GitHub artifact.
 6. **Review findings** – Available in AccuKnox Console: **Dashboard → Issues → Findings**, filtered by scan type.
-7. **Pipeline decision** – If `soft_fail: false`, the pipeline fails when findings are detected.
+7. **PR decoration** – With `pr_decorator: true` on a pull request, findings for the changed files are posted as a summary comment with a quality gate plus inline comments.
+8. **Pipeline decision** – If `soft_fail: false`, the pipeline fails when findings are detected.
 
 ---
 
