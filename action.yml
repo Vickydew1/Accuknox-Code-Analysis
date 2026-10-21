@@ -61,6 +61,22 @@ inputs:
     description: "pipeline: path to codeassure.json (model config) for ai_analysis. The env var named by its api_key must be set on the step/job."
     required: false
     default: ""
+  codeassure_model_provider:
+    description: "pipeline/ai_analysis: model provider (openai | openai-compatible | anthropic | google | gemini). Exported as CODEASSURE_MODEL_PROVIDER. Ignored if a codeassure.json is present in the workspace."
+    required: false
+    default: ""
+  codeassure_model_name:
+    description: "pipeline/ai_analysis: model name as the provider knows it. Exported as CODEASSURE_MODEL_NAME."
+    required: false
+    default: ""
+  codeassure_api_base:
+    description: "pipeline/ai_analysis: provider root URL without /v1 (empty = provider default). Exported as CODEASSURE_API_BASE."
+    required: false
+    default: ""
+  codeassure_api_key:
+    description: "pipeline/ai_analysis: model API key. Exported as CODEASSURE_API_KEY."
+    required: false
+    default: ""
 
   # ------------------------------------------------------------------
   # SAST (OpenGrep)
@@ -567,6 +583,10 @@ runs:
         QUALITY_GATE: ${{ inputs.quality_gate }}
         AI_ANALYSIS: ${{ inputs.ai_analysis }}
         CODEASSURE_CONFIG: ${{ inputs.codeassure_config }}
+        IN_MODEL_PROVIDER: ${{ inputs.codeassure_model_provider }}
+        IN_MODEL_NAME: ${{ inputs.codeassure_model_name }}
+        IN_API_BASE: ${{ inputs.codeassure_api_base }}
+        IN_API_KEY: ${{ inputs.codeassure_api_key }}
         SAST_COMMAND: ${{ inputs.sast_command }}
         SCA_COMMAND: ${{ inputs.sca_command }}
         IAC_COMMAND: ${{ inputs.iac_command }}
@@ -575,6 +595,19 @@ runs:
         SECRET_COMMAND: ${{ inputs.secret_command }}
       run: |
         set -e
+        # Explicit inputs win; when empty, keep whatever the caller exported as env.
+        [ -n "$IN_MODEL_PROVIDER" ] && export CODEASSURE_MODEL_PROVIDER="$IN_MODEL_PROVIDER"
+        [ -n "$IN_MODEL_NAME" ] && export CODEASSURE_MODEL_NAME="$IN_MODEL_NAME"
+        [ -n "$IN_API_BASE" ] && export CODEASSURE_API_BASE="$IN_API_BASE"
+        [ -n "$IN_API_KEY" ] && export CODEASSURE_API_KEY="$IN_API_KEY"
+        # Diagnostics for AI analysis config (names and set/empty only, never values).
+        if [ "$AI_ANALYSIS" = "true" ]; then
+          echo "AI config: cwd=$(pwd)"
+          for v in CODEASSURE_MODEL_PROVIDER CODEASSURE_MODEL_NAME CODEASSURE_API_BASE CODEASSURE_API_KEY CODEASSURE_CONFIG; do
+            if [ -n "${!v}" ]; then echo "  $v: set"; else echo "  $v: NOT SET"; fi
+          done
+          ls -la codeassure.json codeassure.jsonc .env 2>/dev/null || echo "  no codeassure.json / .env in cwd"
+        fi
         # Local (non-container) mode: install the scanner tools each scan needs.
         # (The codeassure/context-graph pair was placed in setup; `tool install
         # codeassure` is for source installs and does not apply to a binary.)
