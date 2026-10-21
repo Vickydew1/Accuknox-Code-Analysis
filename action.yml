@@ -39,6 +39,30 @@ inputs:
     default: "false"
 
   # ------------------------------------------------------------------
+  # Pipeline mode (optional) - one `pipeline` run + quality gate instead of per-scan steps
+  # ------------------------------------------------------------------
+  pipeline:
+    description: "Run the selected scans with 'accuknox-aspm-scanner pipeline' (one upload, optional quality gate, optional AI analysis) instead of one step per scan. Supports sast, sca, secret, iac, sbom."
+    required: false
+    default: "false"
+  quality_gate:
+    description: "pipeline: wait for the AccuKnox policy verdict and fail the build on a policy failure"
+    required: false
+    default: "false"
+  accuknox_gate_token:
+    description: "pipeline: user token for the quality-gate poll API (not the access token). Exported as ACCUKNOX_GATE_TOKEN."
+    required: false
+    default: ""
+  ai_analysis:
+    description: "pipeline: run AI analysis (codeassure + context-graph) on SAST findings"
+    required: false
+    default: "false"
+  codeassure_config:
+    description: "pipeline: path to codeassure.json (model config) for ai_analysis. The env var named by its api_key must be set on the step/job."
+    required: false
+    default: ""
+
+  # ------------------------------------------------------------------
   # SAST (OpenGrep)
   # ------------------------------------------------------------------
   sast_command:
@@ -194,6 +218,7 @@ runs:
         ACCUKNOX_LABEL: ${{ inputs.accuknox_label }}
         SCANNER_VERSION: ${{ inputs.scanner_version }}
         SOFT_FAIL: ${{ inputs.soft_fail }}
+        PIPELINE: ${{ inputs.pipeline }}
       run: |
         set -e
         if [ -z "$ACCUKNOX_ENDPOINT" ] || [ -z "$ACCUKNOX_TOKEN" ] || [ -z "$ACCUKNOX_LABEL" ]; then
@@ -224,6 +249,15 @@ runs:
           *) echo "ERROR: scan_type did not match any known scan. Provide one or more of: sast, sca, secret, iac, ml, api-discovery, sbom."; exit 1 ;;
         esac
 
+        # Pipeline mode: a single step runs every selected scan, so switch the
+        # per-scan steps off (run_pipeline carries the original selection).
+        run_pipeline=false
+        if [ "$PIPELINE" = "true" ]; then
+          run_pipeline=true
+          run_sast=false; run_sca=false; run_secret=false; run_iac=false
+          run_ml=false; run_api=false; run_sbom=false
+        fi
+
         # Normalise soft_fail once; every scan step reuses these.
         SOFT_FAIL="${SOFT_FAIL//[$'\t\r\n ']}"
         {
@@ -239,6 +273,7 @@ runs:
           echo "run_ml=$run_ml"
           echo "run_api=$run_api"
           echo "run_sbom=$run_sbom"
+          echo "run_pipeline=$run_pipeline"
         } >> "$GITHUB_OUTPUT"
 
         # PRE-PRODUCTION TEST ONLY: decorate-pr hasn't shipped in a real
@@ -248,12 +283,24 @@ runs:
         # once decorate-pr is in a real release, and delete test-bin/.
         echo "Installing AccuKnox ASPM Scanner (pre-production test build)..."
         SCANNER_BIN="$RUNNER_TEMP/accuknox-aspm-scanner"
-        cp "${{ github.action_path }}/test-bin/accuknox-aspm-scanner" "$SCANNER_BIN"
+        # Pipeline mode needs the build that has `pipeline`/`gate` (it has no decorate-pr).
+        SRC_BIN="accuknox-aspm-scanner"
+        [ "$PIPELINE" = "true" ] && SRC_BIN="accuknox-aspm-scanner-pipeline"
+        cp "${{ github.action_path }}/test-bin/$SRC_BIN" "$SCANNER_BIN"
         # Real release download, disabled for now:
         # curl -L "https://github.com/accuknox/aspm-scanner-cli/releases/download/${SCANNER_VERSION}/accuknox-aspm-scanner" -o "$SCANNER_BIN"
         chmod +x "$SCANNER_BIN"
         echo "ACCUKNOX_SCANNER=$SCANNER_BIN" >> "$GITHUB_ENV"
         echo "AccuKnox ASPM scanner installed at $SCANNER_BIN"
+
+        # AI analysis binaries (test builds). The scanner looks for codeassure at
+        # ~/.local/bin/accuknox/codeassure/codeassure; codeassure finds
+        # context-graph next to itself.
+        AI_DIR="$HOME/.local/bin/accuknox/codeassure"
+        mkdir -p "$AI_DIR"
+        cp "${{ github.action_path }}/test-bin/codeassure" "$AI_DIR/codeassure"
+        cp "${{ github.action_path }}/test-bin/context-graph" "$AI_DIR/context-graph"
+        chmod +x "$AI_DIR/codeassure" "$AI_DIR/context-graph"
 
     # ------------------------------------------------------------------
     # SAST (OpenGrep)
@@ -504,6 +551,58 @@ runs:
         "$ACCUKNOX_SCANNER" scan $SOFT_FAIL_ARG --keep-results --project-name "$PROJECT_NAME" container --command "$CMD" --generate-sbom --container-mode
 
         [ -f results.json ] && cp results.json results-sbom.json || true
+
+    # ------------------------------------------------------------------
+    # Pipeline (optional) - all selected scans, one upload, quality gate
+    # ------------------------------------------------------------------
+    - name: Run AccuKnox Pipeline
+      if: ${{ steps.setup.outputs.run_pipeline == 'true' }}
+      shell: bash
+      env:
+        ACCUKNOX_ENDPOINT: ${{ inputs.accuknox_endpoint }}
+        ACCUKNOX_TOKEN: ${{ inputs.accuknox_token }}
+        ACCUKNOX_LABEL: ${{ inputs.accuknox_label }}
+        ACCUKNOX_GATE_TOKEN: ${{ inputs.accuknox_gate_token }}
+        SCAN_TYPE: ${{ inputs.scan_type }}
+        QUALITY_GATE: ${{ inputs.quality_gate }}
+        AI_ANALYSIS: ${{ inputs.ai_analysis }}
+        CODEASSURE_CONFIG: ${{ inputs.codeassure_config }}
+        SAST_COMMAND: ${{ inputs.sast_command }}
+        SCA_COMMAND: ${{ inputs.sca_command }}
+        IAC_COMMAND: ${{ inputs.iac_command }}
+        SBOM_COMMAND: ${{ inputs.sbom_command }}
+        SBOM_PROJECT_NAME: ${{ inputs.sbom_project_name }}
+        SECRET_COMMAND: ${{ inputs.secret_command }}
+      run: |
+        set -e
+        # Local (non-container) mode: install the scanner tools each scan needs.
+        # (The codeassure/context-graph pair was placed in setup; `tool install
+        # codeassure` is for source installs and does not apply to a binary.)
+        SCANS=$(echo "$SCAN_TYPE" | tr 'A-Z' 'a-z' | tr ' ' ',' | sed 's/secrets/secret/g')
+        for t in sast iac container syft secret; do
+          case "$t:,$SCANS," in
+            sast:*,sast,*|iac:*,iac,*|secret:*,secret,*) ;;
+            container:*,sca,*|container:*,sbom,*|syft:*,sbom,*) ;;
+            *) continue ;;
+          esac
+          "$ACCUKNOX_SCANNER" tool install --type "$t"
+        done
+
+        ARGS=(--scans "$SCANS" --keep-results)
+        [ "$SOFT_FAIL" = "true" ] && ARGS+=(--softfail)
+        [ "$QUALITY_GATE" = "true" ] && ARGS+=(--quality-gate)
+        [ -n "$SAST_COMMAND" ] && ARGS+=(--sast-command "$SAST_COMMAND")
+        [ -n "$SCA_COMMAND" ] && ARGS+=(--sca-command "$SCA_COMMAND")
+        [ -n "$IAC_COMMAND" ] && ARGS+=(--iac-command "$IAC_COMMAND")
+        [ -n "$SBOM_COMMAND" ] && ARGS+=(--sbom-command "$SBOM_COMMAND")
+        [ -n "$SBOM_PROJECT_NAME" ] && ARGS+=(--project-name "$SBOM_PROJECT_NAME")
+        [ -n "$SECRET_COMMAND" ] && ARGS+=(--secret-command "$SECRET_COMMAND")
+        if [ "$AI_ANALYSIS" = "true" ]; then
+          ARGS+=(--ai-analysis)
+          [ -n "$CODEASSURE_CONFIG" ] && ARGS+=(--codeassure-config "$CODEASSURE_CONFIG")
+        fi
+
+        "$ACCUKNOX_SCANNER" pipeline "${ARGS[@]}"
 
     # ------------------------------------------------------------------
     # Upload kept result files (optional)
