@@ -8,7 +8,7 @@ Instead of wiring up a separate action for every scanner, configure **one step**
 
 ## 🎯 Key Features
 
-- ✅ **7 Scanners, One Action** – SAST (OpenGrep), SCA (Trivy), Secret (TruffleHog), IaC (Checkov), ML Static Scan (ModelScan), API Discovery (code2api), and SBOM (image + filesystem).
+- ✅ **7 Scanners, One Action** – SAST, SCA, Secret, IaC, ML Static Scan, API Discovery, and SBOM (image + filesystem).
 - 🧩 **Run Any Combination** – Select one or many scans with a single comma/space separated `scan_type` input.
 - ⌨️ **Command Text Per Scan** – Every scanner exposes a `<type>_command` input mapped directly to the CLI's `--command`, so you control exactly what each tool runs.
 - 🏗️ **IaC with Frameworks** – Restrict IaC scans to one or more frameworks (e.g. `Kubernetes,Terraform`).
@@ -483,12 +483,12 @@ The review and comments then appear as your App (for example `accuknox[bot]`) wi
 1. **Developer pushes code** – A push or pull request triggers the GitHub Action.
 2. **Scanner setup (once)** – The action validates credentials, parses `scan_type`, and downloads the `accuknox-aspm-scanner` binary for the requested `scanner_version`, then installs the native scanner tools it needs (no Docker image pulls; ML and API Discovery still run in containers).
 3. **Selected scans run** – Each enabled scan executes in `--command` mode, building its arguments from your `<type>_command` and scan-specific inputs:
-   - **SAST** → OpenGrep static analysis
-   - **SCA** → Trivy dependency/composition analysis
-   - **Secret** → TruffleHog secret detection
-   - **IaC** → Checkov misconfiguration checks (optionally per framework)
-   - **ML** → ModelScan static ML model analysis
-   - **API Discovery** → code2api route/endpoint discovery
+   - **SAST** → Static code analysis
+   - **SCA** → Dependency/composition analysis
+   - **Secret** → Secret detection
+   - **IaC** → Misconfiguration checks (optionally per framework)
+   - **ML** → Static ML model analysis
+   - **API Discovery** → Route/endpoint discovery
    - **SBOM** → CycloneDX bill of materials for an image or filesystem
    - **Quality** → AI review of the PR diff (only with `pr_decorator` and an LLM key)
 4. **Results uploaded to AccuKnox Console** – Using the provided `accuknox_token` and `accuknox_label`.

@@ -39,7 +39,7 @@ inputs:
     default: "false"
 
   # ------------------------------------------------------------------
-  # SAST (OpenGrep)
+  # SAST
   # ------------------------------------------------------------------
   sast_command:
     description: "sast: command text passed to --command (the directory/target to scan)"
@@ -51,7 +51,7 @@ inputs:
     default: "HIGH"
 
   # ------------------------------------------------------------------
-  # SCA (Trivy filesystem)
+  # SCA (filesystem)
   # ------------------------------------------------------------------
   sca_command:
     description: "sca: command text passed to --command (e.g. 'fs .')"
@@ -63,7 +63,7 @@ inputs:
     default: ""
 
   # ------------------------------------------------------------------
-  # Secret (TruffleHog)
+  # Secret
   # ------------------------------------------------------------------
   secret_command:
     description: "secret: command text passed to --command (e.g. 'git file://.' or 'filesystem .')"
@@ -75,7 +75,7 @@ inputs:
     default: ""
 
   # ------------------------------------------------------------------
-  # IaC (Checkov) - with framework support
+  # IaC - with framework support
   # ------------------------------------------------------------------
   iac_command:
     description: "iac: raw command text passed to --command. When set, overrides iac_directory/iac_file/iac_framework/iac_compact/iac_quiet."
@@ -103,7 +103,7 @@ inputs:
     default: "true"
 
   # ------------------------------------------------------------------
-  # ML Static Scan (ModelScan)
+  # ML Static Scan
   # ------------------------------------------------------------------
   ml_command:
     description: "ml: command text passed to --command (e.g. 'scan -p . -r json')"
@@ -119,7 +119,7 @@ inputs:
     default: "github"
 
   # ------------------------------------------------------------------
-  # API Discovery (code2api)
+  # API Discovery
   # ------------------------------------------------------------------
   api_command:
     description: "api-discovery: command text passed to --command (e.g. '-path . -output results.json')"
@@ -274,7 +274,7 @@ runs:
         done
 
     # ------------------------------------------------------------------
-    # SAST (OpenGrep)
+    # SAST
     # ------------------------------------------------------------------
     - name: Run AccuKnox SAST Scan
       if: ${{ steps.setup.outputs.run_sast == 'true' }}
@@ -287,7 +287,7 @@ runs:
         SEVERITY: ${{ inputs.sast_severity }}
       run: |
         set -e
-        echo "Starting AccuKnox SAST (OpenGrep) scan..."
+        echo "Starting AccuKnox SAST scan..."
 
         SEVERITY="${SEVERITY//[$'\t\r\n ']}"
         SEVERITY_ARG=""
@@ -308,7 +308,7 @@ runs:
         [ -f results.json ] && mv results.json sast-results.json || true
 
     # ------------------------------------------------------------------
-    # SCA (Trivy filesystem)
+    # SCA (filesystem)
     # ------------------------------------------------------------------
     - name: Run AccuKnox SCA Scan
       if: ${{ steps.setup.outputs.run_sca == 'true' }}
@@ -339,7 +339,7 @@ runs:
         [ -f results.json ] && mv results.json sca-results.json || true
 
     # ------------------------------------------------------------------
-    # Secret (TruffleHog)
+    # Secret
     # ------------------------------------------------------------------
     - name: Run AccuKnox Secret Scan
       if: ${{ steps.setup.outputs.run_secret == 'true' }}
@@ -363,7 +363,7 @@ runs:
         "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG secret --command "$FULL_CMD"
 
     # ------------------------------------------------------------------
-    # IaC (Checkov) - with frameworks
+    # IaC - with frameworks
     # ------------------------------------------------------------------
     - name: Run AccuKnox IaC Scan
       if: ${{ steps.setup.outputs.run_iac == 'true' }}
@@ -386,7 +386,7 @@ runs:
           CMD_ARGS="$RAW_COMMAND"
         else
           CMD_ARGS=""
-          # --file and --directory are mutually exclusive in Checkov; file wins.
+          # --file and --directory are mutually exclusive; file wins.
           if [ -n "$FILE" ]; then
             CMD_ARGS="$CMD_ARGS --file $FILE"
           elif [ -n "$DIRECTORY" ]; then
@@ -407,7 +407,7 @@ runs:
         "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG iac --command "$CMD_ARGS" --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" --repo-branch "${GITHUB_REF#refs/heads/}"
 
     # ------------------------------------------------------------------
-    # ML Static Scan (ModelScan)
+    # ML Static Scan
     # ------------------------------------------------------------------
     - name: Run AccuKnox ML Static Scan
       if: ${{ steps.setup.outputs.run_ml == 'true' }}
@@ -435,7 +435,7 @@ runs:
           $EXTRA
 
     # ------------------------------------------------------------------
-    # API Discovery (code2api)
+    # API Discovery
     # ------------------------------------------------------------------
     - name: Run AccuKnox API Discovery Scan
       if: ${{ steps.setup.outputs.run_api == 'true' }}
@@ -486,7 +486,7 @@ runs:
 
         SEVERITY="${SEVERITY//[$'\t\r\n ']}"
 
-        # The scanner runs the SBOM generator (Trivy) inside a container as root,
+        # The scanner runs the SBOM generator inside a container as root,
         # so the results.json it writes is root-owned. The scanner then enriches
         # that file in-place (injecting project_name and rewriting the in-container
         # scan root "/workdir"/image ref to the real project) BEFORE uploading.
