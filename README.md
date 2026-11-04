@@ -8,7 +8,7 @@ Instead of wiring up a separate action for every scanner, configure **one step**
 
 ## 🎯 Key Features
 
-- ✅ **7 Scanners, One Action** – SAST (OpenGrep), SCA (Trivy), Secret (TruffleHog), IaC (Checkov), ML Static Scan (ModelScan), API Discovery (code2api), and SBOM (image + filesystem).
+- ✅ **7 Scanners, One Action** – SAST, SCA, Secret, IaC, ML Static Scan, API Discovery, and SBOM (image + filesystem).
 - 🧩 **Run Any Combination** – Select one or many scans with a single comma/space separated `scan_type` input.
 - ⌨️ **Command Text Per Scan** – Every scanner exposes a `<type>_command` input mapped directly to the CLI's `--command`, so you control exactly what each tool runs.
 - 🏗️ **IaC with Frameworks** – Restrict IaC scans to one or more frameworks (e.g. `Kubernetes,Terraform`).
@@ -334,6 +334,7 @@ jobs:
 | `scanner_version` | Git tag of the `accuknox-aspm-scanner` binary to download (must include `sca`, `ml`, `api-discovery`) | Optional | `v0.14.7-rc.3` |
 | `soft_fail` | Prevent CI from failing on findings (applies to all scans) | Optional | `true` |
 | `upload_artifact` | Upload kept result files (`results*.json`, `results*.jsonl`) as a GitHub artifact | Optional | `false` |
+| `container_mode` | Run `sast`/`sca`/`secret`/`iac`/`sbom` in Docker instead of the cached local CLI tool binaries. `ml` and `api-discovery` always run in Docker regardless of this flag (no local binary exists for them). | Optional | `false` |
 
 ### SAST (`sast`)
 
@@ -400,18 +401,19 @@ jobs:
 
 1. **Developer pushes code** – A push or pull request triggers the GitHub Action.
 2. **Scanner setup (once)** – The action validates credentials, parses `scan_type`, and downloads the `accuknox-aspm-scanner` binary for the requested `scanner_version`.
-3. **Selected scans run** – Each enabled scan executes in `--command` mode inside a container, building its arguments from your `<type>_command` and scan-specific inputs:
-   - **SAST** → OpenGrep static analysis
-   - **SCA** → Trivy dependency/composition analysis
-   - **Secret** → TruffleHog secret detection
-   - **IaC** → Checkov misconfiguration checks (optionally per framework)
-   - **ML** → ModelScan static ML model analysis
-   - **API Discovery** → code2api route/endpoint discovery
+3. **Tool/image caching (once)** – By default (`container_mode: false`), `sast`/`sca`/`secret`/`iac`/`sbom` install their underlying CLI tool binary  once and cache it via `actions/cache`, so later runs skip the download. `ml` and `api-discovery` have no local binary and always run via Docker; their images are cached the same way as a `docker save` tarball. Setting `container_mode: true` runs `sast`/`sca`/`secret`/`iac`/`sbom` via Docker too, with their images cached the same way instead of the local tool binary.
+4. **Selected scans run** – Each enabled scan builds its arguments from your `<type>_command` and scan-specific inputs:
+   - **SAST** →  static analysis
+   - **SCA** →  dependency/composition analysis
+   - **Secret** →  secret detection
+   - **IaC** → misconfiguration checks (optionally per framework)
+   - **ML** →  static ML model analysis
+   - **API Discovery** →  route/endpoint discovery
    - **SBOM** → CycloneDX bill of materials for an image or filesystem
-4. **Results uploaded to AccuKnox Console** – Using the provided `accuknox_token` and `accuknox_label`.
-5. **Optional artifact upload** – If `upload_artifact: true`, kept result files are saved as a GitHub artifact.
-6. **Review findings** – Available in AccuKnox Console: **Dashboard → Issues → Findings**, filtered by scan type.
-7. **Pipeline decision** – If `soft_fail: false`, the pipeline fails when findings are detected.
+5. **Results uploaded to AccuKnox Console** – Using the provided `accuknox_token` and `accuknox_label`.
+6. **Optional artifact upload** – If `upload_artifact: true`, kept result files are saved as a GitHub artifact.
+7. **Review findings** – Available in AccuKnox Console: **Dashboard → Issues → Findings**, filtered by scan type.
+8. **Pipeline decision** – If `soft_fail: false`, the pipeline fails when findings are detected.
 
 ---
 
