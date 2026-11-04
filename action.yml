@@ -255,6 +255,62 @@ runs:
         echo "ACCUKNOX_SCANNER=$SCANNER_BIN" >> "$GITHUB_ENV"
         echo "AccuKnox ASPM scanner installed at $SCANNER_BIN"
 
+        # Only the tools the selected scans need; the key changes with the scanner binary or tool set.
+        tools=""
+        $run_sast && tools+=" sast"
+        { $run_sca || $run_sbom; } && tools+=" container"
+        $run_secret && tools+=" secret"
+        $run_iac && tools+=" iac"
+        echo "tools=$tools" >> "$GITHUB_OUTPUT"
+        sha=$(sha256sum "$SCANNER_BIN" | cut -c1-12)
+        echo "scanner_sha=$sha" >> "$GITHUB_OUTPUT"
+        echo "tools_key=$sha${tools// /-}" >> "$GITHUB_OUTPUT"
+
+    - name: Cache scanner tools
+      id: tools-cache
+      if: steps.setup.outputs.tools != ''
+      uses: actions/cache@v4
+      with:
+        path: ~/.local/bin/accuknox
+        key: accuknox-tools-${{ runner.os }}-${{ steps.setup.outputs.tools_key }}
+        restore-keys: accuknox-tools-${{ runner.os }}-${{ steps.setup.outputs.scanner_sha }}
+
+    - name: Install scanner tools
+      if: steps.setup.outputs.tools != '' && steps.tools-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: for t in ${{ steps.setup.outputs.tools }}; do "$ACCUKNOX_SCANNER" tool install --type "$t"; done
+
+    # ML/API Discovery have no local tool-install path in this CLI, so they
+    # stay on --container-mode; cache each image as a docker-save tarball.
+    - name: Restore cached ML scan image
+      id: ml-image-cache
+      if: steps.setup.outputs.run_ml == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/accuknox-images/ml-scan.tar
+        key: accuknox-image-ml-scan-1.0.21-linux-amd64
+
+    - name: Restore cached API Discovery image
+      id: api-image-cache
+      if: steps.setup.outputs.run_api == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/accuknox-images/api-discovery.tar
+        key: accuknox-image-api-discovery-0.1.0-linux-amd64
+
+    - name: Load or pull container-mode images
+      if: steps.setup.outputs.run_ml == 'true' || steps.setup.outputs.run_api == 'true'
+      shell: bash
+      run: |
+        set -e
+        load_or_pull() {
+          [ "$1" = true ] || return 0
+          [ "$2" = true ] && { docker load -i "$4"; return; }
+          docker pull ${5:+--platform "$5"} "$3" && mkdir -p "$(dirname "$4")" && docker save -o "$4" "$3"
+        }
+        load_or_pull "${{ steps.setup.outputs.run_ml }}" "${{ steps.ml-image-cache.outputs.cache-hit }}" public.ecr.aws/k9v9d5v2/accuknox/ondemand_modelscan:1.0.21 "${{ runner.temp }}/accuknox-images/ml-scan.tar" linux/amd64
+        load_or_pull "${{ steps.setup.outputs.run_api }}" "${{ steps.api-image-cache.outputs.cache-hit }}" public.ecr.aws/k9v9d5v2/accuknox/code2api:0.1.0 "${{ runner.temp }}/accuknox-images/api-discovery.tar"
+
     # ------------------------------------------------------------------
     # SAST (OpenGrep)
     # ------------------------------------------------------------------
@@ -281,7 +337,6 @@ runs:
           --commit-sha "${GITHUB_SHA}" \
           --pipeline-id "${GITHUB_RUN_ID}" \
           --job-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-          --container-mode \
           $SEVERITY_ARG
 
         # SCA also defaults to ./results.json - rename immediately so a
@@ -316,7 +371,6 @@ runs:
           --command "$COMMAND" \
           --repo-url "https://github.com/${GITHUB_REPOSITORY}" \
           --repo-branch "${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" \
-          --container-mode \
           $SEVERITY_ARG
 
         # See the matching rename in the SAST step - same default filename.
@@ -344,7 +398,7 @@ runs:
         FULL_CMD="$COMMAND"
         [ -n "$ADDITIONAL_ARGUMENTS" ] && FULL_CMD="$FULL_CMD $ADDITIONAL_ARGUMENTS"
 
-        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG secret --command "$FULL_CMD" --container-mode
+        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG secret --command "$FULL_CMD"
 
     # ------------------------------------------------------------------
     # IaC (Checkov) - with frameworks
@@ -388,7 +442,7 @@ runs:
 
         # --keep-results: without it the file is deleted right after
         # upload, before the PR Decorator step below can read it.
-        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG iac --command "$CMD_ARGS" --container-mode --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" --repo-branch "${GITHUB_REF#refs/heads/}"
+        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG iac --command "$CMD_ARGS" --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" --repo-branch "${GITHUB_REF#refs/heads/}"
 
     # ------------------------------------------------------------------
     # ML Static Scan (ModelScan)
@@ -501,7 +555,7 @@ runs:
           [ -n "$SEVERITY" ] && CMD="$CMD --severity $SEVERITY"
         fi
 
-        "$ACCUKNOX_SCANNER" scan $SOFT_FAIL_ARG --keep-results --project-name "$PROJECT_NAME" container --command "$CMD" --generate-sbom --container-mode
+        "$ACCUKNOX_SCANNER" scan $SOFT_FAIL_ARG --keep-results --project-name "$PROJECT_NAME" container --command "$CMD" --generate-sbom
 
         [ -f results.json ] && cp results.json results-sbom.json || true
 
