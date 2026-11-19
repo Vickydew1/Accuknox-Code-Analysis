@@ -28,7 +28,7 @@ inputs:
   scanner_version:
     description: "Version (git tag) of the accuknox-aspm-scanner binary to download (must include the sca, ml, and api-discovery scanners)"
     required: false
-    default: "v0.14.7-rc.3"
+    default: "v0.16.5"
   soft_fail:
     description: "Do not return a non-zero exit code if a scan finds issues (applies to all scans)"
     required: false
@@ -37,6 +37,18 @@ inputs:
     description: "Upload kept scan result files as a GitHub artifact"
     required: false
     default: "false"
+  quality_gate:
+    description: "Let the AccuKnox quality-gate policy pass, warn or fail the build for sast, sca, secret, iac and sbom (ml and api-discovery are not gated). Requires gate_token. When true, the *_severity inputs no longer fail the build."
+    required: false
+    default: "true"
+  gate_token:
+    description: "AccuKnox user token for the quality-gate API (required when quality_gate is true; the label token in accuknox_token is not accepted there)"
+    required: false
+    default: ""
+  gate_timeout:
+    description: "Seconds to wait for the quality-gate verdict"
+    required: false
+    default: "300"
   container_mode:
     description: "Run sast/sca/secret/iac/sbom in Docker (--container-mode) instead of the locally-installed/cached CLI tool binaries. ml-scan and api-discovery always run in container mode regardless of this flag (no local tool-install path exists for them)."
     required: false
@@ -182,6 +194,11 @@ inputs:
     required: false
     default: ""
 
+outputs:
+  gate_status:
+    description: "Quality-gate verdict: passed, warning, failed, error, timeout, unsupported, rejected, or skipped when no gated scan uploaded results. Empty when quality_gate is false."
+    value: ${{ steps.gate.outputs.gate_status }}
+
 runs:
   using: "composite"
   steps:
@@ -199,10 +216,17 @@ runs:
         SCANNER_VERSION: ${{ inputs.scanner_version }}
         SOFT_FAIL: ${{ inputs.soft_fail }}
         CONTAINER_MODE: ${{ inputs.container_mode }}
+        QUALITY_GATE: ${{ inputs.quality_gate }}
+        GATE_TOKEN: ${{ inputs.gate_token }}
       run: |
         set -e
         if [ -z "$ACCUKNOX_ENDPOINT" ] || [ -z "$ACCUKNOX_TOKEN" ] || [ -z "$ACCUKNOX_LABEL" ]; then
           echo "ERROR: accuknox_endpoint, accuknox_token, and accuknox_label must be set!"
+          exit 1
+        fi
+        QUALITY_GATE="$(echo "$QUALITY_GATE" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+        if [ "$QUALITY_GATE" = "true" ] && [ -z "$GATE_TOKEN" ]; then
+          echo "::error::gate_token must be set to an AccuKnox user token when quality_gate is true. Set quality_gate: false to scan without the quality gate."
           exit 1
         fi
 
@@ -270,6 +294,35 @@ runs:
         chmod +x "$SCANNER_BIN"
         echo "ACCUKNOX_SCANNER=$SCANNER_BIN" >> "$GITHUB_ENV"
         echo "AccuKnox ASPM scanner installed at $SCANNER_BIN"
+
+        # Quality gate: gated scan steps call this wrapper instead of `scan`. Each upload joins
+        # the run's quality-gate run and declares only its own scan type, so a scan with nothing
+        # to upload (e.g. no secrets found) never leaves the gate waiting for it. The wrapper
+        # records which scan types uploaded; the final gate step waits for those.
+        GATE=false
+        if [ "$QUALITY_GATE" = "true" ]; then
+          { $run_sast || $run_sca || $run_secret || $run_iac || $run_sbom; } && GATE=true
+          [ "$GATE" = true ] || echo "::notice::quality_gate is on, but only ml/api-discovery were selected, which the quality gate does not cover."
+        fi
+        echo "gate=$GATE" >> "$GITHUB_OUTPUT"
+        GATE_UPLOADS="$RUNNER_TEMP/accuknox-gate-uploads"
+        rm -f "$GATE_UPLOADS"
+        GATED_SCAN="$RUNNER_TEMP/accuknox-gated-scan"
+        cat > "$GATED_SCAN" <<EOF
+        #!/usr/bin/env bash
+        # usage: accuknox-gated-scan <gate scan type> <scan arguments...>
+        set -o pipefail
+        type="\$1"; shift
+        if [ "$GATE" != "true" ]; then exec "$SCANNER_BIN" scan "\$@"; fi
+        log="\$(mktemp)"
+        "$SCANNER_BIN" scan --quality-gate --gate-scanners "\$type" "\$@" 2>&1 | tee "\$log"
+        rc=\${PIPESTATUS[0]}
+        grep -q 'Quality gate run id:' "\$log" && echo "\$type" >> "$GATE_UPLOADS"
+        rm -f "\$log"
+        exit \$rc
+        EOF
+        chmod +x "$GATED_SCAN"
+        echo "ACCUKNOX_GATED_SCAN=$GATED_SCAN" >> "$GITHUB_ENV"
 
         # Only the tools the selected scans need, and only in local mode -
         # container_mode=true runs everything in Docker, so there's nothing
@@ -419,7 +472,7 @@ runs:
         SEVERITY_ARG=""
         [ -n "$SEVERITY" ] && SEVERITY_ARG="--severity $SEVERITY"
 
-        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG sast \
+        "$ACCUKNOX_GATED_SCAN" SG --keep-results $SOFT_FAIL_ARG sast \
           --command "$COMMAND" \
           --repo-url "https://github.com/${GITHUB_REPOSITORY}.git" \
           --commit-sha "${GITHUB_SHA}" \
@@ -455,7 +508,7 @@ runs:
 
         # Asset identity is passed explicitly: git-derived defaults are wrong on
         # PR builds, where the checkout is a detached HEAD.
-        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG sca \
+        "$ACCUKNOX_GATED_SCAN" TR --keep-results $SOFT_FAIL_ARG sca \
           --command "$COMMAND" \
           --repo-url "https://github.com/${GITHUB_REPOSITORY}" \
           --repo-branch "${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" \
@@ -486,7 +539,7 @@ runs:
         FULL_CMD="$COMMAND"
         [ -n "$ADDITIONAL_ARGUMENTS" ] && FULL_CMD="$FULL_CMD $ADDITIONAL_ARGUMENTS"
 
-        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG secret --command "$FULL_CMD" $CONTAINER_MODE_ARG
+        "$ACCUKNOX_GATED_SCAN" TruffleHog --keep-results $SOFT_FAIL_ARG secret --command "$FULL_CMD" $CONTAINER_MODE_ARG
 
     # ------------------------------------------------------------------
     # IaC (Checkov) - with frameworks
@@ -530,7 +583,7 @@ runs:
 
         # --keep-results: without it the file is deleted right after
         # upload, before the PR Decorator step below can read it.
-        "$ACCUKNOX_SCANNER" scan --keep-results $SOFT_FAIL_ARG iac --command "$CMD_ARGS" --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" --repo-branch "${GITHUB_REF#refs/heads/}" $CONTAINER_MODE_ARG
+        "$ACCUKNOX_GATED_SCAN" IAC --keep-results $SOFT_FAIL_ARG iac --command "$CMD_ARGS" --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" --repo-branch "${GITHUB_REF#refs/heads/}" $CONTAINER_MODE_ARG
 
     # ------------------------------------------------------------------
     # ML Static Scan (ModelScan)
@@ -643,7 +696,7 @@ runs:
           [ -n "$SEVERITY" ] && CMD="$CMD --severity $SEVERITY"
         fi
 
-        "$ACCUKNOX_SCANNER" scan $SOFT_FAIL_ARG --keep-results --project-name "$PROJECT_NAME" container --command "$CMD" --generate-sbom $CONTAINER_MODE_ARG
+        "$ACCUKNOX_GATED_SCAN" SBOM $SOFT_FAIL_ARG --keep-results --project-name "$PROJECT_NAME" container --command "$CMD" --generate-sbom $CONTAINER_MODE_ARG
 
         [ -f results.json ] && cp results.json results-sbom.json || true
 
@@ -722,3 +775,50 @@ runs:
           --scan-type "$SCAN_TYPES" \
           --mode "$MODE" \
           $LLM_ARGS
+
+    # ------------------------------------------------------------------
+    # Quality gate - one wait for every gated scan above. Runs last so the
+    # artifact upload and PR decoration happen even when the gate fails.
+    # ------------------------------------------------------------------
+    - name: AccuKnox Quality Gate
+      id: gate
+      if: ${{ steps.setup.outputs.gate == 'true' }}
+      shell: bash
+      env:
+        ACCUKNOX_ENDPOINT: ${{ inputs.accuknox_endpoint }}
+        ACCUKNOX_TOKEN: ${{ inputs.accuknox_token }}
+        ACCUKNOX_GATE_TOKEN: ${{ inputs.gate_token }}
+        GATE_TIMEOUT: ${{ inputs.gate_timeout }}
+      run: |
+        GATE_UPLOADS="$RUNNER_TEMP/accuknox-gate-uploads"
+        if [ ! -s "$GATE_UPLOADS" ]; then
+          echo "No gated scan uploaded results (nothing was found to report), so there is nothing for the quality gate to evaluate."
+          echo "gate_status=skipped" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "Quality gate covers: $(sort -u "$GATE_UPLOADS" | paste -sd, -)"
+        GATE_JSON="$RUNNER_TEMP/accuknox-quality-gate.json"
+        rm -f "$GATE_JSON"
+
+        set +e
+        "$ACCUKNOX_SCANNER" gate --gate-timeout "${GATE_TIMEOUT//[$'\t\r\n ']}" --gate-json-file "$GATE_JSON" $SOFT_FAIL_ARG
+        EXIT=$?
+        set -e
+
+        if [ -f "$GATE_JSON" ]; then
+          python3 - "$GATE_JSON" <<'PY' || echo "Could not read the quality-gate response."
+        import json, os, sys
+        doc = json.load(open(sys.argv[1], encoding="utf-8"))
+        resp = doc.get("response") or {}
+        status = (resp.get("status") if doc.get("state") == "resolved" else None) or doc.get("state") or ""
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+            out.write("gate_status=" + status + "\n")
+        scope = str(resp.get("repository")) + ":" + str(resp.get("branch"))
+        for name, result in (resp.get("results") or {}).items():
+            if result.get("note") == "no_policy_matched":
+                print("::warning title=AccuKnox quality gate::No quality-gate policy applies to " + scope + ", so " + name + " passed without being checked.")
+            elif result.get("note") == "bucket_not_gated":
+                print("::warning title=AccuKnox quality gate::The policies for " + scope + " do not gate " + name + ", so it passed without being checked.")
+        PY
+        fi
+        exit "$EXIT"

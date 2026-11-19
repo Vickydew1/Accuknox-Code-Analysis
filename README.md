@@ -15,6 +15,7 @@ Instead of wiring up a separate action for every scanner, configure **one step**
 - 📦 **SBOM for Image & Filesystem** – Generate a CycloneDX SBOM from a container image or your source tree.
 - 🔒 **Shift Left Security** – Integrate all checks directly into your CI/CD pipeline for early detection.
 - 📥 **Seamless AccuKnox Console Integration** – Findings flow automatically to the AccuKnox dashboard.
+- 🚦 **Quality Gate** – One AccuKnox policy decides whether the build passes, warns or fails, across all gated scans (on by default).
 
 ---
 
@@ -25,6 +26,7 @@ Before using this GitHub Action, ensure the following are in place:
 - 🔐 **AccuKnox Console Access** – Sign in to your AccuKnox tenant.
 - 🗝️ **API Token** – Retrieve this from the AccuKnox Console (see Token Generation).
 - 🏷️ **Label Created in Console** – For tagging the uploaded scan reports.
+- 👤 **User Token for the Quality Gate** – An AccuKnox *user* token (the label token is not accepted by the quality-gate API), plus a quality-gate policy whose scope matches your repository. Or set `quality_gate: false`.
 - 🔑 **GitHub Secrets Configured** – Store the required credentials securely in your repository's GitHub Secrets.
 
 ---
@@ -49,6 +51,7 @@ Go to your repository: **Settings → Secrets and variables → Actions → New 
 | `ACCUKNOX_TOKEN`    | Your AccuKnox API token for authentication |
 | `ACCUKNOX_ENDPOINT` | The AccuKnox API URL (e.g., `cspm.demo.accuknox.com`) |
 | `ACCUKNOX_LABEL`    | Label used to tag and group scan results |
+| `ACCUKNOX_GATE_TOKEN` | AccuKnox **user** token for the quality gate (not needed with `quality_gate: false`) |
 
 ---
 
@@ -75,7 +78,7 @@ jobs:
         uses: actions/checkout@v7.0.0
 
       - name: Run AccuKnox Code Analysis
-        uses: accuknox/accuknox-code-analysis@Latest
+        uses: accuknox/accuknox-code-analysis@v1
         with:
           # Pick any combination of scans
           scan_type: "sast, sca, secret, iac, ml, api-discovery, sbom"
@@ -84,6 +87,7 @@ jobs:
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
+          gate_token: ${{ secrets.ACCUKNOX_GATE_TOKEN }}   # AccuKnox user token for the quality gate
 
           # Common options
           soft_fail: true            # Continue the pipeline on findings
@@ -103,7 +107,7 @@ jobs:
 
 Each example below is a complete, copy-paste workflow. The **per-scanner** examples (one for each `scan_type`) show the minimal set of inputs for a single scan; the **unified** example runs everything in one step.
 
-All examples assume the following secrets are configured: `ACCUKNOX_TOKEN`, `ACCUKNOX_ENDPOINT`, `ACCUKNOX_LABEL`.
+All examples assume the following secrets are configured: `ACCUKNOX_TOKEN`, `ACCUKNOX_ENDPOINT`, `ACCUKNOX_LABEL`, `ACCUKNOX_GATE_TOKEN`.
 
 ### 1. SAST
 
@@ -118,12 +122,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.0
       - name: Run AccuKnox SAST
-        uses: accuknox/accuknox-code-analysis@Latest
+        uses: accuknox/accuknox-code-analysis@v1
         with:
           scan_type: "sast"
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
+          gate_token: ${{ secrets.ACCUKNOX_GATE_TOKEN }}   # AccuKnox user token for the quality gate
           sast_severity: "HIGH,CRITICAL"
           soft_fail: true
 ```
@@ -141,12 +146,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.0
       - name: Run AccuKnox SCA
-        uses: accuknox/accuknox-code-analysis@Latest
+        uses: accuknox/accuknox-code-analysis@v1
         with:
           scan_type: "sca"
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
+          gate_token: ${{ secrets.ACCUKNOX_GATE_TOKEN }}   # AccuKnox user token for the quality gate
           sca_severity: "HIGH,CRITICAL"
           soft_fail: true
 ```
@@ -166,12 +172,13 @@ jobs:
         with:
           fetch-depth: 0   # full history for git-based secret scanning
       - name: Run AccuKnox Secret Scan
-        uses: accuknox/accuknox-code-analysis@Latest
+        uses: accuknox/accuknox-code-analysis@v1
         with:
           scan_type: "secret"
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
+          gate_token: ${{ secrets.ACCUKNOX_GATE_TOKEN }}   # AccuKnox user token for the quality gate
           soft_fail: true
 ```
 
@@ -188,12 +195,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.0
       - name: Run AccuKnox IaC Scan
-        uses: accuknox/accuknox-code-analysis@Latest
+        uses: accuknox/accuknox-code-analysis@v1
         with:
           scan_type: "iac"
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
+          gate_token: ${{ secrets.ACCUKNOX_GATE_TOKEN }}   # AccuKnox user token for the quality gate
           soft_fail: true
 ```
 
@@ -210,12 +218,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.0
       - name: Run AccuKnox ML Static Scan
-        uses: accuknox/accuknox-code-analysis@Latest
+        uses: accuknox/accuknox-code-analysis@v1
         with:
           scan_type: "ml"
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
+          gate_token: ${{ secrets.ACCUKNOX_GATE_TOKEN }}   # AccuKnox user token for the quality gate
           soft_fail: true
 ```
 
@@ -232,12 +241,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.0
       - name: Run AccuKnox API Discovery
-        uses: accuknox/accuknox-code-analysis@Latest
+        uses: accuknox/accuknox-code-analysis@v1
         with:
           scan_type: "api-discovery"
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
+          gate_token: ${{ secrets.ACCUKNOX_GATE_TOKEN }}   # AccuKnox user token for the quality gate
           soft_fail: true
 ```
 
@@ -266,12 +276,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.0
       - name: Run AccuKnox SBOM (filesystem)
-        uses: accuknox/accuknox-code-analysis@Latest
+        uses: accuknox/accuknox-code-analysis@v1
         with:
           scan_type: "sbom"
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
+          gate_token: ${{ secrets.ACCUKNOX_GATE_TOKEN }}   # AccuKnox user token for the quality gate
           sbom_scan_type: "filesystem"
           sbom_scan_path: "."
           sbom_project_name: "my-project"   # required for SBOM
@@ -296,7 +307,7 @@ jobs:
       - uses: actions/checkout@v7.0.0
 
       - name: Run AccuKnox Code Analysis
-        uses: accuknox/accuknox-code-analysis@Latest
+        uses: accuknox/accuknox-code-analysis@v1
         with:
           # Run every scanner in a single step
           scan_type: "sast, sca, secret, iac, ml, sbom"
@@ -305,6 +316,7 @@ jobs:
           accuknox_token: ${{ secrets.ACCUKNOX_TOKEN }}
           accuknox_endpoint: ${{ secrets.ACCUKNOX_ENDPOINT }}
           accuknox_label: ${{ secrets.ACCUKNOX_LABEL }}
+          gate_token: ${{ secrets.ACCUKNOX_GATE_TOKEN }}   # AccuKnox user token for the quality gate
 
           # Common options
           soft_fail: true
@@ -321,6 +333,38 @@ jobs:
 
 ---
 
+## 🚦 Quality Gate
+
+With `quality_gate: true` (the default), the policies you configure in AccuKnox decide the build instead of the `*_severity` inputs.
+
+1. Each gated scan (`sast`, `sca`, `secret`, `iac`, `sbom`) uploads its results as part of one quality-gate run for this workflow run.
+2. After all scans, the **AccuKnox Quality Gate** step waits once for AccuKnox to evaluate them against the policies whose scope matches `owner/repo:branch` (on pull requests, the PR's source branch).
+3. The step passes, warns or fails from the verdict. The per-scan results and every breached threshold are printed in the log.
+
+| Verdict | Step result | `gate_status` output |
+|---|---|---|
+| Passed, or passed with warnings | passes | `passed` / `warning` |
+| A policy failed | fails, unless `soft_fail: true` | `failed` |
+| AccuKnox could not evaluate a scan, the token was rejected, quality gates are not available, or no verdict within `gate_timeout` | fails, even with `soft_fail: true` | `error` / `rejected` / `unsupported` / `timeout` |
+| No gated scan had anything to upload | passes | `skipped` |
+
+Notes:
+
+- `soft_fail` defaults to `true`, which reports a failed policy without failing the build. Set `soft_fail: false` to block on it.
+- A scan with nothing to report (for example no secrets found) uploads nothing and is simply not part of the gate.
+- `ml` and `api-discovery` are not covered by the quality gate; they run and upload as before.
+- Without a policy matching the repository and branch, the gate passes with the warning *No quality-gate policy applies to …*.
+- Your AccuKnox environment must support quality gates; otherwise the step fails with `unsupported` after uploading. Use `quality_gate: false` until it does.
+- Call the action once per workflow run. Two calls in the same run share one quality-gate run.
+
+### Outputs
+
+| Output | Description |
+|---|---|
+| `gate_status` | Quality-gate verdict (see above). Empty when `quality_gate` is `false` |
+
+---
+
 ## ⚙️ Configuration Options (Inputs)
 
 ### Common
@@ -331,8 +375,11 @@ jobs:
 | `accuknox_token` | API token for authenticating with AccuKnox SaaS | Required | — |
 | `accuknox_endpoint` | URL of the AccuKnox Console to push results | Required | — |
 | `accuknox_label` | Label used in AccuKnox SaaS to organise and identify results | Required | — |
-| `scanner_version` | Git tag of the `accuknox-aspm-scanner` binary to download (must include `sca`, `ml`, `api-discovery`) | Optional | `v0.14.7-rc.3` |
-| `soft_fail` | Prevent CI from failing on findings (applies to all scans) | Optional | `true` |
+| `scanner_version` | Git tag of the `accuknox-aspm-scanner` binary to download (must include `sca`, `ml`, `api-discovery`) | Optional | `v0.16.5` |
+| `quality_gate` | Let the AccuKnox quality-gate policy decide the build for `sast`, `sca`, `secret`, `iac`, `sbom`. When `true`, the `*_severity` inputs no longer fail the build | Optional | `true` |
+| `gate_token` | AccuKnox **user** token for the quality-gate API. Required when `quality_gate` is `true` | Optional* | `""` |
+| `gate_timeout` | Seconds to wait for the quality-gate verdict | Optional | `300` |
+| `soft_fail` | Prevent CI from failing on findings (applies to all scans). With the quality gate: report a failed policy without failing the build | Optional | `true` |
 | `upload_artifact` | Upload kept result files (`results*.json`, `results*.jsonl`) as a GitHub artifact | Optional | `false` |
 | `container_mode` | Run `sast`/`sca`/`secret`/`iac`/`sbom` in Docker instead of the cached local CLI tool binaries. `ml` and `api-discovery` always run in Docker regardless of this flag (no local binary exists for them). | Optional | `false` |
 
@@ -393,7 +440,7 @@ jobs:
 | `sbom_severity` | Comma-separated severities | Optional | `""` |
 | `sbom_project_name` | Project name (AccuKnox entity). **Required** for SBOM | Optional* | `""` |
 
-\* Required only when `sbom` is included in `scan_type`.
+\* `sbom_project_name` is required only when `sbom` is included in `scan_type`; `gate_token` only when `quality_gate` is `true`.
 
 ---
 
@@ -412,7 +459,7 @@ jobs:
 4. **Results uploaded to AccuKnox Console** – Using the provided `accuknox_token` and `accuknox_label`.
 5. **Optional artifact upload** – If `upload_artifact: true`, kept result files are saved as a GitHub artifact.
 6. **Review findings** – Available in AccuKnox Console: **Dashboard → Issues → Findings**, filtered by scan type.
-7. **Pipeline decision** – If `soft_fail: false`, the pipeline fails when findings are detected.
+7. **Pipeline decision** – With `quality_gate: true` (default), the **AccuKnox Quality Gate** step waits for the AccuKnox policy verdict and passes, warns or fails the build. With `quality_gate: false` and `soft_fail: false`, the pipeline fails when findings above the `*_severity` thresholds are detected.
 
 ---
 
